@@ -3,8 +3,6 @@ import PIL.Image
 from lib.ebd_control_codes import CONTROL_CODES
 from lib.xiino_palette_common import PALETTE
 
-xiino_palette = PIL.Image.open("lib/paletised.png")
-
 
 def find_closest_palette_index(pixel):
     r, g, b = pixel
