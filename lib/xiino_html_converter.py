@@ -1,3 +1,4 @@
+import os
 import requests
 import random
 from lib.xiino_image_converter import EBDConverter
@@ -95,6 +96,15 @@ class XiinoHTMLParser(HTMLParser):
         self.requests_headers = {
             "User-Agent": "OpenXiino/1.0 (http://github.com/nicl83/openxiino) python-requests/2.27.1"
         }
+        
+        # Configure proxy settings if available
+        self.proxies = None
+        socks_proxy = os.getenv('SOCKS5_PROXY')
+        if socks_proxy:
+            self.proxies = {
+                'http': socks_proxy,
+                'https': socks_proxy
+            }
 
         super().__init__(convert_charrefs=convert_charrefs)
 
@@ -178,7 +188,12 @@ class XiinoHTMLParser(HTMLParser):
             # Handle regular URLs
             full_url = urljoin(self.base_url, url)
             image_buffer = BytesIO(
-                requests.get(full_url, timeout=5, headers=self.requests_headers).content
+                requests.get(
+                    full_url,
+                    timeout=5,
+                    headers=self.requests_headers,
+                    proxies=self.proxies
+                ).content
             )
 
         try:

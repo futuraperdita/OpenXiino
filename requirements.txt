@@ -18,6 +18,7 @@ propcache==0.2.1
 pybars3==0.9.7
 pycparser==2.22
 PyMeta3==0.5.1
+PySocks==1.7.1
 python-dotenv==1.0.1
 PyYAML==6.0.2
 requests==2.31.0
