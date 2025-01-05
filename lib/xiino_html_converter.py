@@ -153,15 +153,31 @@ class XiinoHTMLParser(HTMLParser):
         return data
 
     def parse_image(self, url: str):
-        full_url = urljoin(self.base_url, url)
-        image_buffer = BytesIO(
-            requests.get(full_url, timeout=5, headers=self.requests_headers).content
-        )
+        if url.startswith('data:'):
+            # Handle data: URLs
+            try:
+                # Split into metadata and base64 content
+                header, base64_data = url.split(',', 1)
+                # Create buffer directly from base64 data
+                image_buffer = BytesIO()
+                import base64
+                image_buffer.write(base64.b64decode(base64_data))
+                image_buffer.seek(0)
+            except Exception as e:
+                print(f"Warn: failed to decode data: URL - {str(e)}")
+                self.__parsed_data_buffer += "<p>[Invalid data: URL image]</p>"
+                return
+        else:
+            # Handle regular URLs
+            full_url = urljoin(self.base_url, url)
+            image_buffer = BytesIO(
+                requests.get(full_url, timeout=5, headers=self.requests_headers).content
+            )
 
         try:
             image = Image.open(image_buffer)
         except UnidentifiedImageError as exception_info:
-            print("Warn: unsupported image due to unsupported format at", full_url)
+            print("Warn: unsupported image due to unsupported format at", url)
             print(exception_info.args[0])
             self.__parsed_data_buffer += "<p>[Unsupported image]</p>"
             image_buffer.close()
@@ -169,7 +185,7 @@ class XiinoHTMLParser(HTMLParser):
 
         # pre-filter images
         if image.width / 2 <= 1 or image.width / 2 <= 1:
-            print("Warn: unsupported image due to being too small at", full_url)
+            print("Warn: unsupported image due to being too small at", url)
             self.__parsed_data_buffer += "<p>[Unsupported image]</p>"
             return
 

@@ -21,11 +21,9 @@ Converts images from any format supported by Pillow to Xiino's proprietary forma
 
 ## Known issues
 
-- Images embedded into pages using `data:` will cause that page to fail to load.
 - SVG images are not yet supported.
 - Some images render garbled or otherwise incorrectly.
   - If you find a page with such an image, please open an issue.
-- Many images will have white "spots" on dark areas.
 
 If you find an issue not listed here, please open an issue with the URL of the page that causes the issue, a description of the issue, and an exception traceback (if applicable).
 
