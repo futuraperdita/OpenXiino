@@ -123,10 +123,11 @@ class XiinoHTMLParser(HTMLParser):
                     attrs = new_attrs
 
                 self.parsing_supported_tag = True
-                self.__parsed_data_buffer += f"<{tag.upper()} "
-                self.__parsed_data_buffer += " ".join(
-                    f'{x[0].upper()}="{x[1]}"' for x in attrs
-                )
+                self.__parsed_data_buffer += f"<{tag.upper()}"
+                if attrs:
+                    self.__parsed_data_buffer += " " + " ".join(
+                        f'{x[0].upper()}="{x[1]}"' for x in attrs
+                    )
                 self.__parsed_data_buffer += ">\n"
 
         else:

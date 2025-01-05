@@ -34,9 +34,9 @@ class TestXiinoHTMLParser(unittest.TestCase):
         result = self.parser.get_parsed_data()
         
         # Verify basic HTML conversion
-        self.assertIn("<H1 >", result)
+        self.assertIn("<H1>", result)
         self.assertIn("Test Page", result)
-        self.assertIn("<P >", result)
+        self.assertIn("<P>", result)
         self.assertIn("This is a test paragraph", result)
         
         # Verify link conversion (relative to absolute)
