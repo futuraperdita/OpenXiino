@@ -84,11 +84,13 @@ class XiinoHTMLParser(HTMLParser):
         *,
         base_url,
         convert_charrefs: bool = True,
+        grayscale_depth: int | None = None
     ) -> None:
         self.parsing_supported_tag = True
         self.__parsed_data_buffer = ""
         self.ebd_image_tags = []
         self.base_url = base_url
+        self.grayscale_depth = grayscale_depth
 
         self.requests_headers = {
             "User-Agent": "OpenXiino/1.0 (http://github.com/nicl83/openxiino) python-requests/2.27.1"
@@ -172,13 +174,16 @@ class XiinoHTMLParser(HTMLParser):
 
         ebd_converter = EBDConverter(image)
 
-        colour_data = ebd_converter.convert_colour(compressed=True)
+        if self.grayscale_depth:
+            image_data = ebd_converter.convert_gs(depth=self.grayscale_depth, compressed=True)
+        else:
+            image_data = ebd_converter.convert_colour(compressed=True)
 
         ebd_ref = len(self.ebd_image_tags) + 1  # get next "slot"
         self.__parsed_data_buffer += (
-            colour_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
+            image_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
         )
-        self.ebd_image_tags.append(colour_data.generate_ebdimage_tag(name=ebd_ref))
+        self.ebd_image_tags.append(image_data.generate_ebdimage_tag(name=ebd_ref))
         image_buffer.close()
 
 

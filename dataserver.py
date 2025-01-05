@@ -51,7 +51,15 @@ class XiinoDataServer(BaseHTTPRequestHandler):
             else:
                 print(url)
                 response = requests.get(url, headers=self.REQUESTS_HEADER, timeout=5)
-                parser = XiinoHTMLParser(base_url=response.url)
+                
+                # Check if grayscale is requested
+                gscale_depth = self.GSCALE_DEPTH_REGEX.search(self.requestline)
+                grayscale_depth = int(gscale_depth.group(1)) if gscale_depth else None
+                
+                parser = XiinoHTMLParser(
+                    base_url=response.url,
+                    grayscale_depth=grayscale_depth
+                )
                 print(response.url)
                 parser.feed(response.text)
                 clean_html = parser.get_parsed_data()
