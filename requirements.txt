@@ -3,3 +3,5 @@ Pillow>=9.5.0
 Requests==2.31.0
 yattag==1.15.1
 pybars3==0.9.7
+python-dotenv==1.0.0
+aiohttp==3.8.5
