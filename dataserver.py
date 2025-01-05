@@ -3,9 +3,8 @@ import re
 import http.server
 from http.server import BaseHTTPRequestHandler
 from lib.xiino_html_converter import XiinoHTMLParser
+from lib.controllers.page_controller import PageController
 import base64
-
-import yattag
 
 
 def iso8859(string: str) -> bytes:
@@ -26,6 +25,10 @@ class XiinoDataServer(BaseHTTPRequestHandler):
         "User-Agent": "OpenXiino/1.0 (http://github.com/nicl83/openxiino) python-requests/2.27.1"
     }
 
+    def __init__(self, *args, **kwargs):
+        self.page_controller = PageController()
+        super().__init__(*args, **kwargs)
+
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
@@ -36,20 +39,43 @@ class XiinoDataServer(BaseHTTPRequestHandler):
         # send magic padding xiino expects
         self.wfile.write(bytes([0x00] * 12))
         self.wfile.write(bytes([0x0D, 0x0A] * 2))
-        # TODO: real actual websites
+
         if url:
             print(url)
             url = url.group(1)
-            if url == "http://about/":
-                self.about()
+            
+            # Handle about: URLs
+            if url.startswith("http://about/"):
+                url = "about:"
             elif url == "http://github/":
-                self.github()
+                url = "about:github"
             elif url == "http://about2/":
-                self.more_info()
+                url = "about:more"
             elif url == "http://deviceinfo/":
-                self.device_info()
+                url = "about:device"
+                
+            if url.startswith("about:"):
+                # Get device info for device info page
+                request_info = None
+                if url == "about:device":
+                    colour_depth = self.COLOUR_DEPTH_REGEX.search(self.requestline)
+                    gscale_depth = self.GSCALE_DEPTH_REGEX.search(self.requestline)
+                    screen_width = self.SCREEN_WIDTH_REGEX.search(self.requestline)
+                    txt_encoding = self.TXT_ENCODING_REGEX.search(self.requestline)
+                    
+                    request_info = {
+                        "color_depth": colour_depth.group(1) if colour_depth else None,
+                        "grayscale_depth": gscale_depth.group(1) if gscale_depth else None,
+                        "screen_width": screen_width.group(1) if screen_width else None,
+                        "encoding": txt_encoding.group(1) if txt_encoding else None,
+                        "headers": self.headers.as_string()
+                    }
+                
+                # Render page using controller
+                page_content = self.page_controller.handle_page(url, request_info)
+                self.wfile.write(page_content.encode("latin-1", errors="replace"))
             else:
-                print(url)
+                # Handle external URLs
                 response = requests.get(url, headers=self.REQUESTS_HEADER, timeout=5)
                 
                 # Check if grayscale is requested
@@ -64,90 +90,10 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                 parser.feed(response.text)
                 clean_html = parser.get_parsed_data()
                 self.wfile.write(clean_html.encode("latin-1", errors="ignore"))
-
         else:
-            self.wfile.write(
-                "Invalid request! Please contact the devs.".encode("latin-1")
-            )
-            self.wfile.write(f"<br>Request: {self.requestline}".encode("latin-1"))
-
-    def about(self):
-        "Show the About screen."
-        self.__internal_file_page_handler("about.html")
-
-    def github(self):
-        "Show a QR code linking to my GitHub."
-        self.__internal_file_page_handler("github.html")
-
-    def more_info(self):
-        "Show more info about OpenXiino."
-        self.__internal_file_page_handler("about2.html")
-
-    def device_info(self):
-        "Show info about the device making the request."
-        colour_depth = self.COLOUR_DEPTH_REGEX.search(self.requestline)
-        gscale_depth = self.GSCALE_DEPTH_REGEX.search(self.requestline)
-        screen_width = self.SCREEN_WIDTH_REGEX.search(self.requestline)
-        txt_encoding = self.TXT_ENCODING_REGEX.search(self.requestline)
-        infopage = yattag.Doc()
-        with infopage.tag("html"):
-            infopage.line("title", "Device Info")
-            with infopage.tag("body"):
-                infopage.line("h1", "Device Info")
-                with infopage.tag("ul"):
-                    if colour_depth:
-                        depth = colour_depth.group(1)
-                        with infopage.tag("li"):
-                            infopage.line("b", f"{depth}-bit colour ")
-                            infopage.text("reported by Xiino.")
-                    elif gscale_depth:
-                        depth = gscale_depth.group(1)
-                        with infopage.tag("li"):
-                            infopage.line("b", f"{depth}-bit grayscale ")
-                            infopage.text("reported by Xiino.")
-                    else:
-                        with infopage.tag("li"):
-                            infopage.text("Your device isn't reporting a colour depth!")
-                            infopage.text(
-                                "Please tell the OpenXiino devs about your Xiino version."
-                            )
-
-                    if screen_width:
-                        width = screen_width.group(1)
-                        with infopage.tag("li"):
-                            infopage.line("b", f"{width}px ")
-                            infopage.text("viewport reported by Xiino. ")
-                            if int(width) > 153:
-                                infopage.text("This is a high-density device.")
-                    else:
-                        with infopage.tag("li"):
-                            infopage.text("Your device isn't reporting a screen width!")
-                            infopage.text(
-                                "Please tell the OpenXiino devs about your Xiino version."
-                            )
-
-                    if txt_encoding:
-                        encoding = txt_encoding.group(1)
-                        with infopage.tag("li"):
-                            infopage.text("Your text encoding is set to ")
-                            infopage.stag("br")
-                            infopage.line("b", str(encoding))
-                    else:
-                        with infopage.tag("li"):
-                            infopage.text("Your device isn't reporting an encoding!")
-                            infopage.text(
-                                "Please tell the OpenXiino devs about your Xiino version."
-                            )
-
-                infopage.line("h2", "Request Headers")
-                infopage.line("pre", self.headers.as_string())
-
-        self.wfile.write(infopage.getvalue().encode("latin-1", errors="replace"))
-
-    def __internal_file_page_handler(self, filename: str):
-        "Load a page from the server's own files."
-        with open(filename, encoding="utf-8") as handle:
-            self.wfile.write(handle.read().encode("latin-1", errors="replace"))
+            # Handle invalid requests with 404 page
+            page_content = self.page_controller.handle_page("about:not-found")
+            self.wfile.write(page_content.encode("latin-1", errors="replace"))
 
 
 if __name__ == "__main__":

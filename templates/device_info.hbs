@@ -1,0 +1,59 @@
+<HTML>
+<TITLE>{{title}}</TITLE>
+
+<BODY>
+    <H1>{{title}}</H1>
+    <UL>
+        {{#if color_depth}}
+            <LI>
+                <B>{{color_depth}}-bit colour</B>
+                reported by Xiino.
+            </LI>
+        {{else}}
+            {{#if grayscale_depth}}
+                <LI>
+                    <B>{{grayscale_depth}}-bit grayscale</B>
+                    reported by Xiino.
+                </LI>
+            {{else}}
+                <LI>
+                    Your device isn't reporting a colour depth!
+                    Please tell the OpenXiino devs about your Xiino version.
+                </LI>
+            {{/if}}
+        {{/if}}
+
+        {{#if screen_width}}
+            <LI>
+                <B>{{screen_width}}px</B>
+                viewport reported by Xiino.
+                {{#if (gt screen_width 153)}}
+                    This is a high-density device.
+                {{/if}}
+            </LI>
+        {{else}}
+            <LI>
+                Your device isn't reporting a screen width!
+                Please tell the OpenXiino devs about your Xiino version.
+            </LI>
+        {{/if}}
+
+        {{#if encoding}}
+            <LI>
+                Your text encoding is set to
+                <BR>
+                <B>{{encoding}}</B>
+            </LI>
+        {{else}}
+            <LI>
+                Your device isn't reporting an encoding!
+                Please tell the OpenXiino devs about your Xiino version.
+            </LI>
+        {{/if}}
+    </UL>
+
+    <H2>Request Headers</H2>
+    <PRE>{{headers}}</PRE>
+</BODY>
+
+</HTML>
