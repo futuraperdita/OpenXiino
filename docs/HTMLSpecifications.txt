@@ -1,0 +1,274 @@
+Xiino 3.4E HTML Specifications
+-------------------------
+
+HTML3.2 standard 
+
+- Character Display 
+   Various display characteristics
+  Size Normal, Large 
+  Style Normal, Bold (alphabets only), Underscore 
+ 
+
+- Graphic Image 
+   Graphic images are converted via the Image proxy server(called DataServer) to adjust to the size of screen.
+  Size WIDTH > 306pixel -> WIDTH = 153pixel（reduced to 153 pixels）
+  WIDTH <= 306pixel -> WIDTH = WIDTH * 0.5pixel（reduce to half the width）
+  HEIGHT is reduced to the same proportion as WIDTH.
+  Also, the size of the image to the screen can be controlled with Xiino specific tags <EBDWIDTH><EBDHEIGHT>. 
+  Remarks GIF, converted GIF, JPEG are supported.
+  Animated GIF, FLASH, Quicktime are not supported. 
+ 
+- Table 
+   Table is displayed as follows:
+  Size Setting by pixels (WIDTH="100")
+  WIDTH > 306pixel -> WIDTH = 153pixel（reduced to 153 pixels）
+  WIDTH <= 306pixel -> WIDTH = WIDTH * 0.5pixel（reduce to half the width)
+  eg: If WIDTH="100", then the width on the Palm OS handheld screen is reduced to 50 pixels.
+  Setting by percentage (WIDTH="100%")
+  Display according to the size of the screen.  
+  Remarks When the table is a nested table, the inner-most table is displayed as table. The rest is displayed in line feed, thus not display as table. 
+ 
+
+- Color 
+   Color is displayed as follows.
+   Color handhelds : 65000-color (near-true-color)
+   Monochrome handhelds : 16-tone  
+   Remarks When image is display via proxy server, the color of the image is transformed into 65000 color (near-true-color)
+ 
+- Frames 
+   Frames are displayed in Xiino a follows.
+   A frame icon on the top right corner of the screen indicates that the web page is composed of frames.
+   The division of the frame icon in white color shows that it is the current page of the frame.  
+ 
+- cookie 
+   cookie is supported in Xiino.
+   Limitations Maximum writeable: 40
+   Limitation per site: 20
+   Maximum cookie size: 4Kb 
+ 
+- Data Type not supported  
+   The following data type is not supported.
+   JavaApplet, Animation (Animated GIF, Flash, Quicktime, etc.), Sound (WAVE, MP3, etc.) 
+ 
+
+- Xiino Interface 
+   Maximum size
+    WIDTH x HEIGHT = 306pixels x 260(390)pixels
+   Scrollbar 
+    Vertical: Displayed when lenght of screen exeeds display
+    Horizontal: None 
+
+
+
+SUPPORTED HTML TAGS
+---------------------
+A		HREF NAME TARGET ONCLICK
+*ADDRESS
+AREA		COORDS HREF SHAPE(CIRCLE,POLY,POLYGON,RECT) TARGET NOHREF
+B
+BASE		HREF
+BASEFONT	SIZE COLOR
+BLINK
+BLOCKQUOTE  
+BODY
+BGCOLOR 	TEXT LINK VLINK ALINK ONLOAD ONUNLOAD 
+		**EBDWIDTH **EBDHEIGHT
+BR
+CLEAR		(NONE,LEFT,RIGHT,ALL)
+CENTER
+*CAPTION  
+*CITE
+*CODE
+DD
+DIR		TYPE
+DIV		ALIGN(LEFT,CENTER,RIGHT)
+DL 		COMPACT
+DT
+FONT		SIZE COLOR
+FORM		LOCAL METHOD(GET,POST) ACTION ONRESET ONSUBMIT
+FRAME		SRC NAME
+FRAMESET	COLS ROWS
+H1		ALIGN
+H2		ALIGN
+H3		ALIGN
+H4		ALIGN
+H5		ALIGN
+H6		ALIGN
+HR		SIZE WIDTH NOSHADE ALIGN(LEFT,CENTER,RIGHT)
+I
+IMG		WIDTH HEIGHT BORDER HSPACE VSPACE ALIGN 				(LEFT,RIGHT,TOP,ABSMIDDLE,ABSBOTTOM,TEXTTOP,MIDDLE, BASELINE, BOTTOM) 
+		ISMAP USEMAP ALT SRC
+INPUT		NAME VALUE TYPE(SUBMIT,RESET,(IMAGE),BUTTON,RADIO, 
+		CHECKBOX,HIDDEN,PASSWORD,TEXT) MAXLENGTH SIZE DISABLED 
+		CHECKED ONBLUR ONCHANGE ONCLICK ONFOCUS ONSCAN ONSELECT 
+*ISINDEX
+KBD
+LI		TYPE(1,A,a,I,i,DISC,CIRCLE,SQUARE) VALUE
+MAP		NAME 
+META		CONTENT HTTP-EQUIV NAME
+*MULTICOL
+*NOBR
+NOFRAMES
+OL		START TYPE(1,A,a,I,i)
+OPTION		VALUE SELECTED 
+P		ALIGN
+PLAINTEXT
+PRE
+S
+SCRIPT		LANGUAGE
+SELECT		MULTIPLE NAME ONCHANGE
+SMALL
+STRIKE
+STRONG
+STYLE
+*SUB
+*SUP
+TABLE		BORDER ALIGN BGCOLOR CELLPADDING CELLSPACING
+TD		COLSPAN ROWSPAN WIDTH HEIGHT NOWRAP ALIGN(LEFT,CENTER,RIGHT) 
+		VALIGN(TOP,BOTTOM,MIDDLE,BASELINE) BGCOLOR TEXTAREA NAME DISABLED 
+TH		COLSPAN ROWSPAN WIDTH HEIGHT NOWRAP ALIGN(LEFT,CENTER,RIGHT) 
+		VALIGN(TOP,BOTTOM,MIDDLE,BASELINE) BGCOLOR TITLE 
+TR		ALIGN(LEFT,CENTER,RIGHT) VALIGN(TOP,BOTTOM,MIDDLE,BASELINE) BGCOLOR
+*TT
+U
+UL		TYPE(DISC,CIRCLE,SQUARE) 
+*VAR
+XMP
+WBR
+ 
+
+Supported JavaScripts
+------------------
+JavaScript which Scripting Module of the JavaScript converted in this software is supported as follows:
+Supported operated child: all except DELETE
+Construction supported: All except with, for...in, label:, import, export 
+
+Basic Objects 
+(*) Added in the new version
+Object.toString
+Object.valueOf
+Array.join
+String.toString
+String.valueOf
+String.charAt
+String.charCodeAt
+String.indexOf
+String.lastIndexOf
+String.substring
+String.fromCharCode
+Boolean.toString
+Boolean.valueOf
+Number.toString
+Number.valueOf
+Math.abs
+Math.ceil
+Math.floor
+Math.max
+Math.min
+Math.random
+Math.round
+Date.UTC
+Date.toString
+Date.getYear
+Date.getUTCYear
+Date.getFullYear
+Date.getUTCFullYear
+Date.getMonth
+Date.getUTCMonth
+Date.getDate
+Date.getUTCDate
+Date.getDay
+Date.getUTCDay
+Date.getHours
+Date.getUTCHours
+Date.getMinutes
+Date.getUTCMinutes
+Date.getSeconds
+Date.getUTCSeconds
+Date.getMilliseconds
+Date.getUTCMilliseconds
+Date.getTimezoneOffset
+Date.setTime
+Date.setMilliseconds
+Date.setUTCMilliseconds
+Date.setSeconds
+Date.setUTCSeconds
+Date.setMinutes
+Date.setUTCMinutes
+Date.setHours
+Date.setUTCHours
+Date.setDate
+Date.setFullYear
+Date.setUTCFullYear
+Date.setYear
+document.write
+document.writeln
+document.forms (*)
+document.forms[].elements (*)
+document.forms[].elements[].checked (*)
+document.forms[].elements[].defaultChecked (*)
+document.forms[].elements[].defaultValue (*)
+document.forms[].elements[].form (*)
+document.forms[].elements[].name (*)
+document.forms[].elements[].options (*)
+document.forms[].elements[].options[].defaultSelected (*)
+document.forms[].elements[].options[].index (*)
+document.forms[].elements[].options[].selected (*)
+document.forms[].elements[].options[].text (*)
+document.forms[].elements[].options[].value (*)
+document.forms[].elements[].selectedIndex (*)
+document.forms[].elements[].type (*)
+document.forms[].elements[].value (*)
+document.forms[].submit (*)
+document.forms[].reset (*)
+document.location (refer to location) (*)
+history.back
+history.forward
+history.go
+location (*)
+location.hash (*)
+location.host (*)
+location.href (*)
+location.pathname (*)
+location.protocol (*)
+location.search (*)
+window.alert
+window.document (refer to window) (*)  
+
+Global 
+-----
+NaN
+Infinity
+eval
+parseInt
+parseFloat
+escape
+unescape
+isNaN
+isFinite
+Object
+String
+Number
+Math
+Date  
+
+Event Handler 
+-----------
+BODY		onLoad (*)
+		onUnload (*)
+ 
+A		onClick (*)
+ 
+FORM		onSubmit (*)
+		onReset (*)
+ 
+INPUT		TYPE=TEXT
+		onBlur (*)
+		onFocus (*)
+		TYPE=CHECKBOX|RADIO|BUTTON|SUBMIT|RESET
+		onClick (*)
+ 
+SELECT		onChange (*)
+ 
+
+-------------------------
