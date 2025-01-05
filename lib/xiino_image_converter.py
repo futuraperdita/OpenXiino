@@ -222,9 +222,10 @@ class EBDConverter:
         for y in range(0, self.image.height):
             raw_data = [im_gs.getpixel((x, y)) for x in range(0, self.image.width)]
             for chunk in self.__divide_chunks(raw_data, 2):
-                byte = (round(chunk[0] / 16)) << 4 | (
-                    0 if len(chunk) < 2 else round(chunk[1] / 16)
-                ) << 0
+                # Scale values to 0-15 range for 4-bit grayscale
+                val1 = min(15, round(chunk[0] / 16))
+                val2 = 0 if len(chunk) < 2 else min(15, round(chunk[1] / 16))
+                byte = (val1 << 4) | val2
                 buf.append(byte)
 
         return bytes(buf)
@@ -256,11 +257,3 @@ class EBDConverter:
         "Helper function for splitting things into chunks"
         for i in range(0, len(l), n):
             yield l[i : i + n]
-
-
-if __name__ == "__main__":
-    im = PIL.Image.open("py_scripts/converter/test.jpg")
-    xim = EBDConverter(im)
-    with open("mode9.bin", "wb") as h:
-        print(h.write(xim.convert_colour(compressed=True)))
-    print(xim.image.width, xim.image.height)

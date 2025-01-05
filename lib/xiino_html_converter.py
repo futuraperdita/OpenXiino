@@ -185,11 +185,3 @@ class XiinoHTMLParser(HTMLParser):
         )
         self.ebd_image_tags.append(image_data.generate_ebdimage_tag(name=ebd_ref))
         image_buffer.close()
-
-
-if __name__ == "__main__":
-    page_data = requests.get("http://en.wikipedia.org", timeout=5).text
-    parser = XiinoHTMLParser(base_url="http://en.wikipedia.org")
-    parser.feed(page_data)
-    with open("wikipedia.html", "w", encoding="latin-1", errors="ignore") as handle:
-        handle.write(parser.get_parsed_data())

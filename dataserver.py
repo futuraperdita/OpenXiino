@@ -1,7 +1,6 @@
 import os
 import re
 import asyncio
-import socket
 import multiprocessing
 from aiohttp import ClientSession, ClientTimeout
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -9,7 +8,6 @@ from socketserver import ThreadingMixIn
 from dotenv import load_dotenv
 from lib.xiino_html_converter import XiinoHTMLParser
 from lib.controllers.page_controller import PageController
-import base64
 
 # Load environment variables
 load_dotenv()
