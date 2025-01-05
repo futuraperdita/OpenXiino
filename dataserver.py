@@ -8,9 +8,11 @@ from socketserver import ThreadingMixIn
 from dotenv import load_dotenv
 from lib.xiino_html_converter import XiinoHTMLParser
 from lib.controllers.page_controller import PageController
+from lib.logger import setup_logging, server_logger
 
-# Load environment variables
+# Load environment variables and setup logging
 load_dotenv()
+setup_logging()
 
 def iso8859(string: str) -> bytes:
     "Shorthand to convert a string to iso-8859"
@@ -107,22 +109,23 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                         base_url=response_url,
                         grayscale_depth=grayscale_depth
                     )
-                    print(f"Processing URL: {response_url}")
+                    server_logger.debug(f"Processing URL: {response_url}")
                     parser.feed(content)
                     clean_html = parser.get_parsed_data()
                     self.wfile.write(clean_html.encode("latin-1", errors="ignore"))
                 except Exception as e:
-                    print(f"Error processing URL {url}: {str(e)}")
+                    server_logger.error(f"Error processing URL {url}: {str(e)}")
                     page_content = self.page_controller.handle_page("about:not-found")
                     self.wfile.write(page_content.encode("latin-1", errors="replace"))
 
         except Exception as e:
-            print(f"Error handling request: {str(e)}")
+            server_logger.error(f"Error handling request: {str(e)}")
             try:
                 page_content = self.page_controller.handle_page("about:not-found")
                 self.wfile.write(page_content.encode("latin-1", errors="replace"))
             except:
                 # Last resort error handling
+                server_logger.critical("Failed to serve error page")
                 self.wfile.write(iso8859("Internal Server Error"))
 
     def do_GET(self):
@@ -136,12 +139,12 @@ class XiinoDataServer(BaseHTTPRequestHandler):
 def run_worker(server):
     """Run a worker process that handles requests from the shared server"""
     try:
-        print(f"Worker process {multiprocessing.current_process().name} started")
+        server_logger.info(f"Worker process {multiprocessing.current_process().name} started")
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     except Exception as e:
-        print(f"Error in worker process: {str(e)}")
+        server_logger.error(f"Error in worker process: {str(e)}")
 
 if __name__ == "__main__":
     # Determine number of worker processes
@@ -157,7 +160,7 @@ if __name__ == "__main__":
     server = ThreadedHTTPServer((host, port), XiinoDataServer)
     server.allow_reuse_address = True
     
-    print(f"Starting server on {host}:{port} with {workers} workers")
+    server_logger.info(f"Starting server on {host}:{port} with {workers} workers")
     
     # Start worker processes
     processes = []
@@ -171,7 +174,7 @@ if __name__ == "__main__":
         for process in processes:
             process.join()
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        server_logger.info("Shutting down server...")
     finally:
         server.shutdown()
         server.server_close()
@@ -181,4 +184,4 @@ if __name__ == "__main__":
                 process.terminate()
                 process.join()
         
-        print("Server stopped")
+        server_logger.info("Server stopped")

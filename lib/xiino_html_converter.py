@@ -6,6 +6,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
+from lib.logger import html_logger
 
 supported_tags = [
     "A",
@@ -117,7 +118,7 @@ class XiinoHTMLParser(HTMLParser):
                     true_url = source_url[0]
                     self.parse_image(true_url)
                 else:
-                    print(f"WARNING: IMG with no SRC at {self.base_url}")
+                    html_logger.warning(f"IMG with no SRC at {self.base_url}")
             else:
                 if tag == "a":
                     # fix up links for poor little browser
@@ -181,7 +182,7 @@ class XiinoHTMLParser(HTMLParser):
                     image_buffer.write(base64.b64decode(base64_data))
                     image_buffer.seek(0)
             except Exception as e:
-                print(f"Warn: failed to decode data: URL - {str(e)}")
+                html_logger.warning(f"Failed to decode data: URL - {str(e)}")
                 self.__parsed_data_buffer += "<p>[Invalid data: URL image]</p>"
                 return
         else:
@@ -199,15 +200,14 @@ class XiinoHTMLParser(HTMLParser):
         try:
             image = Image.open(image_buffer)
         except UnidentifiedImageError as exception_info:
-            print("Warn: unsupported image due to unsupported format at", url)
-            print(exception_info.args[0])
+            html_logger.warning(f"Unsupported image format at {url}: {exception_info.args[0]}")
             self.__parsed_data_buffer += "<p>[Unsupported image]</p>"
             image_buffer.close()
             return
 
         # pre-filter images
         if image.width / 2 <= 1 or image.width / 2 <= 1:
-            print("Warn: unsupported image due to being too small at", url)
+            html_logger.warning(f"Image too small at {url}")
             self.__parsed_data_buffer += "<p>[Unsupported image]</p>"
             return
 

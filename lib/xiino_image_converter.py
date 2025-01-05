@@ -10,6 +10,7 @@ import io
 import lib.scanline as scanline
 import lib.mode9 as mode9
 from lib.xiino_palette_common import PALETTE
+from lib.logger import image_logger
 
 
 @dataclass
@@ -78,7 +79,7 @@ class EBDConverter:
             else:
                 self.image = image.convert("RGB")  # Just in case :)
         except ValueError as exception_data:
-            print(f"OH NO! Image composite fail?? {image.size}")
+            image_logger.error(f"Image composite failed for size {image.size}")
             raise exception_data
 
     def convert_bw(self, compressed: bool = False) -> EBDImage:
