@@ -1,7 +1,14 @@
 import unittest
 from PIL import Image
 import io
+import os
 from lib.xiino_image_converter import EBDConverter, EBDImage
+
+TEST_SVG = '''<?xml version="1.0" encoding="UTF-8"?>
+<svg width="400" height="400" version="1.1" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
+    <rect x="50" y="50" width="300" height="300" fill="black"/>
+    <circle cx="200" cy="200" r="100" fill="white"/>
+</svg>'''
 
 class TestEBDConverter(unittest.TestCase):
     def setUp(self):
@@ -11,6 +18,37 @@ class TestEBDConverter(unittest.TestCase):
         for x in range(50):
             for y in range(50):
                 self.test_image.putpixel((x, y), (0, 0, 0))
+
+    def test_svg_string_conversion(self):
+        """Test that SVG strings are correctly converted"""
+        converter = EBDConverter(TEST_SVG)
+        result = converter.convert_colour(compressed=True)
+        
+        self.assertIsInstance(result, EBDImage)
+        self.assertEqual(result.mode, 9)  # Mode 9 is compressed color
+        # SVG is 400x400, should be scaled to 153x153 per Xiino spec
+        self.assertEqual(result.width, 153)
+        self.assertEqual(result.height, 153)
+        self.assertGreater(len(result.raw_data), 0)
+
+    def test_svg_file_conversion(self):
+        """Test that SVG files are correctly converted"""
+        # Create a temporary SVG file
+        with open('test.svg', 'w') as f:
+            f.write(TEST_SVG)
+        try:
+            converter = EBDConverter('test.svg')
+            result = converter.convert_colour(compressed=True)
+            
+            self.assertIsInstance(result, EBDImage)
+            self.assertEqual(result.mode, 9)
+            self.assertEqual(result.width, 153)
+            self.assertEqual(result.height, 153)
+            self.assertGreater(len(result.raw_data), 0)
+        finally:
+            # Clean up
+            if os.path.exists('test.svg'):
+                os.remove('test.svg')
 
     def test_color_conversion(self):
         """Test that images are correctly converted to color mode"""

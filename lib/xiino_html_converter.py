@@ -158,11 +158,18 @@ class XiinoHTMLParser(HTMLParser):
             try:
                 # Split into metadata and base64 content
                 header, base64_data = url.split(',', 1)
-                # Create buffer directly from base64 data
-                image_buffer = BytesIO()
-                import base64
-                image_buffer.write(base64.b64decode(base64_data))
-                image_buffer.seek(0)
+                # Check if this is an SVG
+                if 'svg+xml' in header.lower():
+                    # Decode SVG XML and pass directly to EBDConverter
+                    import base64
+                    svg_content = base64.b64decode(base64_data).decode('utf-8')
+                    image_buffer = svg_content
+                else:
+                    # Create buffer directly from base64 data for other formats
+                    image_buffer = BytesIO()
+                    import base64
+                    image_buffer.write(base64.b64decode(base64_data))
+                    image_buffer.seek(0)
             except Exception as e:
                 print(f"Warn: failed to decode data: URL - {str(e)}")
                 self.__parsed_data_buffer += "<p>[Invalid data: URL image]</p>"

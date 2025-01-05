@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import PIL.Image
 import PIL.ImageOps
 import bitstring
+import cairosvg
+import io
 import lib.scanline as scanline
 import lib.mode9 as mode9
 from lib.xiino_palette_common import PALETTE
@@ -48,7 +50,14 @@ class EBDConverter:
         # HEIGHT is reduced to the same proportion as WIDTH.
 
         if isinstance(image, str):
-            image = PIL.Image.open(image)
+            # Try to detect if this is SVG content
+            if image.lower().endswith('.svg') or '<svg' in image[:1000].lower():
+                # Convert SVG to PNG in memory
+                png_data = cairosvg.svg2png(url=image if image.lower().endswith('.svg') else None,
+                                          bytestring=image.encode('utf-8') if not image.lower().endswith('.svg') else None)
+                image = PIL.Image.open(io.BytesIO(png_data))
+            else:
+                image = PIL.Image.open(image)
 
         if not override_scale_logic:
             if image.width > 306:
