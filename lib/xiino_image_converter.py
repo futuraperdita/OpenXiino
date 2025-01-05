@@ -237,14 +237,19 @@ class EBDConverter:
         return scanline.compress_data_with_scanline(self.__convert_mode4(), width_bytes)
 
     def __convert_mode8(self) -> bytes:
-        xiino_palette = PIL.Image.open("lib/paletised.png")
-        image = self.image.quantize(palette=xiino_palette).convert("RGB")
         buf = bytearray()
-        for px in image.getdata():
-            if px in PALETTE:
-                buf.append(PALETTE.index(px))
-            else:
-                buf.append(0xE6)
+        for px in self.image.getdata():
+            # Find closest color in palette using Euclidean distance
+            min_distance = float('inf')
+            best_index = 0xE6  # Default, but should never be used
+            r, g, b = px
+            for i, (pr, pg, pb) in enumerate(PALETTE):
+                # Calculate color distance
+                distance = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+                if distance < min_distance:
+                    min_distance = distance
+                    best_index = i
+            buf.append(best_index)
         return buf
 
     def __divide_chunks(self, l: list, n: int):

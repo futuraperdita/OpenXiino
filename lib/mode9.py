@@ -6,10 +6,20 @@ from lib.xiino_palette_common import PALETTE
 xiino_palette = PIL.Image.open("lib/paletised.png")
 
 
+def find_closest_palette_index(pixel):
+    r, g, b = pixel
+    min_distance = float('inf')
+    best_index = 0xE6  # Default, but should never be used
+    for i, (pr, pg, pb) in enumerate(PALETTE):
+        distance = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+        if distance < min_distance:
+            min_distance = distance
+            best_index = i
+    return best_index
+
 def compress_mode9(image: PIL.Image.Image):
-    image = image.quantize(palette=xiino_palette).convert(
-        "RGB"
-    )  # quantise and then un-quantise
+    # Convert to RGB to ensure consistent color format
+    image = image.convert("RGB")
 
     data = list(image.getdata())
     rows = []
@@ -121,11 +131,11 @@ def compress_line(line: list, prev_line: list | None, first_line: bool):
             # rle not applicable
             # and does not appear anywhere on previous line
             # just write the colour to the buffer
-            active_colour = 0xE6 if pixel not in PALETTE else PALETTE.index(pixel)
+            active_colour = find_closest_palette_index(pixel)
             buffer.append(active_colour)
         # HACK force RLE
         elif best_compression == "rle":
-            active_colour = 0xE6 if pixel not in PALETTE else PALETTE.index(pixel)
+            active_colour = find_closest_palette_index(pixel)
             buffer.append(active_colour)
 
             if rle_length >= 6:
