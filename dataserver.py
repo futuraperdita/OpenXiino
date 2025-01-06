@@ -120,7 +120,7 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                         grayscale_depth=grayscale_depth
                     )
                     server_logger.debug(f"Processing URL: {response_url}")
-                    parser.feed(content)
+                    await parser.feed_async(content)
                     clean_html = parser.get_parsed_data()
                     self.end_headers()  # End headers after adding Set-Cookie headers
                     self.wfile.write(clean_html.encode("latin-1", errors="ignore"))

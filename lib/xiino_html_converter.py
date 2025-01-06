@@ -1,83 +1,26 @@
 import os
 import random
 import asyncio
-from lib.xiino_image_converter import EBDConverter
-from lib.httpclient import fetch_binary
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
+import base64
+
+from lib.xiino_image_converter import EBDConverter
+from lib.httpclient import fetch_binary
 from lib.logger import html_logger
 
 supported_tags = [
-    "A",
-    "ADDRESS",
-    "AREA",
-    "B",
-    "BASE",
-    "BASEFONT",
-    "BLINK",
-    "BLOCKQUOTE",
-    "BODY",
-    "BGCOLOR",
-    "BR",
-    "CLEAR",
-    "CENTER",
-    "CAPTION",
-    "CITE",
-    "CODE",
-    "DD",
-    "DIR",
-    "DIV",
-    "DL",
-    "DT",
-    "FONT",
-    "FORM",
-    "FRAME",
-    "FRAMESET",
-    "H1",
-    "H2",
-    "H3",
-    "H4",
-    "H5",
-    "H6",
-    "HR",
-    "I",
-    "IMG",
-    "INPUT",
-    "ISINDEX",
-    "KBD",
-    "LI",
-    "MAP",
-    "META",
-    "MULTICOL",
-    "NOBR",
-    "NOFRAMES",
-    "OL",
-    "OPTION",
-    "P",
-    "PLAINTEXT",
-    "PRE",
-    "S",
-    "SELECT",
-    "SMALL",
-    "STRIKE",
-    "STRONG",
-    "STYLE",
-    "SUB",
-    "SUP",
-    "TABLE",
-    "TITLE",  # why was this not included?
-    "TD",
-    "TH",
-    "TR",
-    "TT",
-    "U",
-    "UL",
-    "VAR",
-    "XMP",
+    "A", "ADDRESS", "AREA", "B", "BASE", "BASEFONT", "BLINK", "BLOCKQUOTE",
+    "BODY", "BGCOLOR", "BR", "CLEAR", "CENTER", "CAPTION", "CITE", "CODE",
+    "DD", "DIR", "DIV", "DL", "DT", "FONT", "FORM", "FRAME", "FRAMESET",
+    "H1", "H2", "H3", "H4", "H5", "H6", "HR", "I", "IMG", "INPUT",
+    "ISINDEX", "KBD", "LI", "MAP", "META", "MULTICOL", "NOBR", "NOFRAMES",
+    "OL", "OPTION", "P", "PLAINTEXT", "PRE", "S", "SELECT", "SMALL",
+    "STRIKE", "STRONG", "STYLE", "SUB", "SUP", "TABLE", "TITLE",
+    "TD", "TH", "TR", "TT", "U", "UL", "VAR", "XMP",
 ]
-
 
 class XiinoHTMLParser(HTMLParser):
     "Parse HTML to Xiino spec."
@@ -94,8 +37,7 @@ class XiinoHTMLParser(HTMLParser):
         self.ebd_image_tags = []
         self.base_url = base_url
         self.grayscale_depth = grayscale_depth
-
-
+        self.pending_images = []
         super().__init__(convert_charrefs=convert_charrefs)
 
     def handle_starttag(self, tag, attrs):
@@ -105,7 +47,7 @@ class XiinoHTMLParser(HTMLParser):
                 source_url = [attr[1] for attr in attrs if attr[0].lower() == "src"]
                 if source_url:
                     true_url = source_url[0]
-                    self.parse_image(true_url)
+                    self.pending_images.append(true_url)
                 else:
                     html_logger.warning(f"IMG with no SRC at {self.base_url}")
             else:
@@ -129,7 +71,6 @@ class XiinoHTMLParser(HTMLParser):
                         f'{x[0].upper()}="{x[1]}"' for x in attrs
                     )
                 self.__parsed_data_buffer += ">\n"
-
         else:
             self.parsing_supported_tag = False
 
@@ -143,16 +84,7 @@ class XiinoHTMLParser(HTMLParser):
         if tag.upper() in supported_tags:
             self.__parsed_data_buffer += f"</{tag.upper()}>\n"
 
-    def get_parsed_data(self):
-        "Get the parsed data from the buffer, then clear it."
-        for tag in self.ebd_image_tags:
-            self.__parsed_data_buffer += tag + "\n"
-        data = self.__parsed_data_buffer
-        self.__parsed_data_buffer = ""
-        self.ebd_image_tags = []
-        return data
-
-    def parse_image(self, url: str):
+    async def parse_image(self, url: str):
         if url.startswith('data:'):
             # Handle data: URLs
             try:
@@ -161,13 +93,11 @@ class XiinoHTMLParser(HTMLParser):
                 # Check if this is an SVG
                 if 'svg+xml' in header.lower():
                     # Decode SVG XML and pass directly to EBDConverter
-                    import base64
                     svg_content = base64.b64decode(base64_data).decode('utf-8')
                     image_buffer = svg_content
                 else:
                     # Create buffer directly from base64 data for other formats
                     image_buffer = BytesIO()
-                    import base64
                     image_buffer.write(base64.b64decode(base64_data))
                     image_buffer.seek(0)
             except Exception as e:
@@ -177,12 +107,9 @@ class XiinoHTMLParser(HTMLParser):
         else:
             # Handle regular URLs
             full_url = urljoin(self.base_url, url)
-            # Use asyncio to run the async fetch_binary in a sync context
-            image_buffer = BytesIO(
-                asyncio.get_event_loop().run_until_complete(
-                    fetch_binary(full_url)
-                )
-            )
+            # Fetch image data asynchronously
+            image_data = await fetch_binary(full_url)
+            image_buffer = BytesIO(image_data)
 
         try:
             image = Image.open(image_buffer)
@@ -211,3 +138,20 @@ class XiinoHTMLParser(HTMLParser):
         )
         self.ebd_image_tags.append(image_data.generate_ebdimage_tag(name=ebd_ref))
         image_buffer.close()
+
+    async def feed_async(self, data: str):
+        """Asynchronously feed data to the parser."""
+        self.feed(data)
+        # Process any pending images
+        for url in self.pending_images:
+            await self.parse_image(url)
+        self.pending_images = []
+
+    def get_parsed_data(self):
+        """Get the parsed data from the buffer, then clear it."""
+        for tag in self.ebd_image_tags:
+            self.__parsed_data_buffer += tag + "\n"
+        data = self.__parsed_data_buffer
+        self.__parsed_data_buffer = ""
+        self.ebd_image_tags = []
+        return data

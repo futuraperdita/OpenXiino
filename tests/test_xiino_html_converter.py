@@ -1,84 +1,88 @@
-import unittest
-import responses
+import pytest
+from aioresponses import aioresponses
 from lib.xiino_html_converter import XiinoHTMLParser
+from PIL import Image
+from io import BytesIO
 
-class TestXiinoHTMLParser(unittest.TestCase):
-    def setUp(self):
-        self.base_url = "http://test.example.com"
-        self.parser = XiinoHTMLParser(base_url=self.base_url)
+@pytest.fixture
+def base_url():
+    return "http://test.example.com"
 
-    @responses.activate
-    def test_data_url_image(self):
-        """Test that data: URL images are correctly handled"""
-        # A 10x10 black pixel PNG in base64
-        data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFElEQVR42mP8z8BQz0AEYBxVSF+FABJYApqNYm2lAAAAAElFTkSuQmCC"
-        
-        test_html = f"""
-        <html>
-            <body>
-                <img src="{data_url}" alt="Test Data URL Image">
-            </body>
-        </html>
-        """
-        
-        self.parser.feed(test_html)
-        result = self.parser.get_parsed_data()
-        
-        # Verify image conversion
-        self.assertIn("<IMG", result)  # IMG tag exists
-        self.assertIn("EBD=", result)  # Has EBD reference
-        self.assertIn("<EBDIMAGE", result)  # EBDIMAGE tag exists
-        self.assertIn("MODE=", result)  # Has mode specified
-        
-    @responses.activate
-    def test_html_parsing(self):
-        """Test that HTML is correctly parsed and converted to Xiino format"""
-        # Create a test image
-        from PIL import Image
-        from io import BytesIO
-        test_image = Image.new('RGB', (10, 10), color='black')
-        image_buffer = BytesIO()
-        test_image.save(image_buffer, format='PNG')
-        image_data = image_buffer.getvalue()
-        image_buffer.close()
+@pytest.fixture
+def parser(base_url):
+    return XiinoHTMLParser(base_url=base_url)
 
-        # Mock the response for any image requests
-        responses.add(
-            responses.GET,
-            "http://test.example.com/test.jpg",
-            body=image_data,
-            status=200,
-            content_type="image/png"
-        )
+@pytest.fixture
+def mock_aiohttp():
+    with aioresponses() as m:
+        yield m
 
-        test_html = """
-        <html>
-            <body>
-                <h1>Test Page</h1>
-                <p>This is a test paragraph</p>
-                <a href="/relative/link">Relative Link</a>
-                <img src="/test.jpg" alt="Test Image">
-            </body>
-        </html>
-        """
-        
-        self.parser.feed(test_html)
-        result = self.parser.get_parsed_data()
-        
-        # Verify basic HTML conversion
-        self.assertIn("<H1>", result)
-        self.assertIn("Test Page", result)
-        self.assertIn("<P>", result)
-        self.assertIn("This is a test paragraph", result)
-        
-        # Verify link conversion (relative to absolute)
-        self.assertIn('HREF="http://test.example.com/relative/link"', result)
-        
-        # Verify image conversion
-        self.assertIn("<IMG", result)  # IMG tag exists
-        self.assertIn("EBD=", result)  # Has EBD reference
-        self.assertIn("<EBDIMAGE", result)  # EBDIMAGE tag exists
-        self.assertIn("MODE=", result)  # Has mode specified
+@pytest.mark.asyncio
+async def test_data_url_image(parser):
+    """Test that data: URL images are correctly handled"""
+    # A 10x10 black pixel PNG in base64
+    data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFElEQVR42mP8z8BQz0AEYBxVSF+FABJYApqNYm2lAAAAAElFTkSuQmCC"
+    
+    test_html = f"""
+    <html>
+        <body>
+            <img src="{data_url}" alt="Test Data URL Image">
+        </body>
+    </html>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    # Verify image conversion
+    assert "<IMG" in result  # IMG tag exists
+    assert "EBD=" in result  # Has EBD reference
+    assert "<EBDIMAGE" in result  # EBDIMAGE tag exists
+    assert "MODE=" in result  # Has mode specified
 
-if __name__ == '__main__':
-    unittest.main()
+@pytest.mark.asyncio
+async def test_html_parsing(parser, mock_aiohttp, base_url):
+    """Test that HTML is correctly parsed and converted to Xiino format"""
+    # Create a test image
+    test_image = Image.new('RGB', (10, 10), color='black')
+    image_buffer = BytesIO()
+    test_image.save(image_buffer, format='PNG')
+    image_data = image_buffer.getvalue()
+    image_buffer.close()
+
+    # Mock the response for any image requests
+    mock_aiohttp.get(
+        f"{base_url}/test.jpg",
+        body=image_data,
+        status=200,
+        content_type="image/png"
+    )
+
+    test_html = """
+    <html>
+        <body>
+            <h1>Test Page</h1>
+            <p>This is a test paragraph</p>
+            <a href="/relative/link">Relative Link</a>
+            <img src="/test.jpg" alt="Test Image">
+        </body>
+    </html>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    # Verify basic HTML conversion
+    assert "<H1>" in result
+    assert "Test Page" in result
+    assert "<P>" in result
+    assert "This is a test paragraph" in result
+    
+    # Verify link conversion (relative to absolute)
+    assert f'HREF="{base_url}/relative/link"' in result
+    
+    # Verify image conversion
+    assert "<IMG" in result  # IMG tag exists
+    assert "EBD=" in result  # Has EBD reference
+    assert "<EBDIMAGE" in result  # EBDIMAGE tag exists
+    assert "MODE=" in result  # Has mode specified
