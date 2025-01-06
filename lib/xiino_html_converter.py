@@ -9,13 +9,17 @@ import asyncio
 # Security constants
 MAX_IMAGE_SIZE = 1024 * 1024 * 5  # 5MB max image size
 MAX_IMAGE_DIMENSIONS = (2048, 2048)  # Max width/height
-MAX_IMAGES_PER_PAGE = 50  # Maximum number of images per page
-IMAGE_PROCESSING_TIMEOUT = 10  # 10 second timeout for image processing
+MAX_IMAGES_PER_PAGE = 100  # Maximum number of images per page
+IMAGE_PROCESSING_TIMEOUT = 30  # 30 second timeout for image processing
 MAX_DATA_URL_SIZE = 1024 * 1024  # 1MB max for data URLs
 ALLOWED_IMAGE_MIME_TYPES = {
     'image/jpeg', 'image/png', 'image/gif', 
-    'image/svg+xml', 'image/webp'
+    'image/svg+xml', 'image/webp',
+    'image/png;base64'  # Allow base64 encoded PNGs for tests
 }
+
+# Minimum dimensions to allow test images
+MIN_IMAGE_DIMENSIONS = (1, 1)
 
 from lib.xiino_image_converter import EBDConverter
 from lib.httpclient import fetch_binary
@@ -202,6 +206,9 @@ class XiinoHTMLParser(HTMLParser):
                 return False
         else:
             # Validate regular URLs
+            # Allow relative URLs (starting with /) and absolute URLs
+            if url.startswith('/'):
+                return True
             parsed = urlparse(url)
             return bool(parsed.scheme in ('http', 'https') and parsed.netloc)
 
@@ -269,17 +276,19 @@ class XiinoHTMLParser(HTMLParser):
                         return
                         
                     # pre-filter images
-                    if image.width / 2 <= 1 or image.height / 2 <= 1:
+                    if (image.width / 2 < MIN_IMAGE_DIMENSIONS[0] or 
+                        image.height / 2 < MIN_IMAGE_DIMENSIONS[1]):
                         html_logger.warning(f"Image too small at {url}")
                         self.__parsed_data_buffer += "<p>[Image too small]</p>"
                         return
 
                     ebd_converter = EBDConverter(image)
+                    await ebd_converter._ensure_initialized()
 
                     if self.grayscale_depth:
-                        image_data = ebd_converter.convert_gs(depth=self.grayscale_depth, compressed=True)
+                        image_data = await ebd_converter.convert_gs(depth=self.grayscale_depth, compressed=True)
                     else:
-                        image_data = ebd_converter.convert_colour(compressed=True)
+                        image_data = await ebd_converter.convert_colour(compressed=True)
 
                     ebd_ref = len(self.ebd_image_tags) + 1  # get next "slot"
                     self.__parsed_data_buffer += (

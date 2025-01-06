@@ -1,7 +1,8 @@
-import unittest
+import pytest
 from PIL import Image
 import io
 import os
+import asyncio
 from lib.xiino_image_converter import EBDConverter, EBDImage
 
 TEST_SVG = '''<?xml version="1.0" encoding="UTF-8"?>
@@ -10,97 +11,103 @@ TEST_SVG = '''<?xml version="1.0" encoding="UTF-8"?>
     <circle cx="200" cy="200" r="100" fill="white"/>
 </svg>'''
 
-class TestEBDConverter(unittest.TestCase):
-    def setUp(self):
-        # Create a simple test image in memory
-        self.test_image = Image.new('RGB', (100, 100), color='white')
-        # Add some black pixels to test conversion
-        for x in range(50):
-            for y in range(50):
-                self.test_image.putpixel((x, y), (0, 0, 0))
+@pytest.fixture
+def test_image():
+    # Create a simple test image in memory
+    image = Image.new('RGB', (100, 100), color='white')
+    # Add some black pixels to test conversion
+    for x in range(50):
+        for y in range(50):
+            image.putpixel((x, y), (0, 0, 0))
+    return image
 
-    def test_svg_string_conversion(self):
+class TestEBDConverter:
+
+    @pytest.mark.asyncio
+    async def test_svg_string_conversion(self, test_image):
         """Test that SVG strings are correctly converted"""
         converter = EBDConverter(TEST_SVG)
-        result = converter.convert_colour(compressed=True)
+        result = await converter.convert_colour(compressed=True)
         
-        self.assertIsInstance(result, EBDImage)
-        self.assertEqual(result.mode, 9)  # Mode 9 is compressed color
+        assert isinstance(result, EBDImage)
+        assert result.mode == 9  # Mode 9 is compressed color
         # SVG is 400x400, should be scaled to 153x153 per Xiino spec
-        self.assertEqual(result.width, 153)
-        self.assertEqual(result.height, 153)
-        self.assertGreater(len(result.raw_data), 0)
+        assert result.width == 153
+        assert result.height == 153
+        assert len(result.raw_data) > 0
 
-    def test_svg_file_conversion(self):
+    @pytest.mark.asyncio
+    async def test_svg_file_conversion(self, test_image):
         """Test that SVG files are correctly converted"""
         # Create a temporary SVG file
         with open('test.svg', 'w') as f:
             f.write(TEST_SVG)
         try:
             converter = EBDConverter('test.svg')
-            result = converter.convert_colour(compressed=True)
+            result = await converter.convert_colour(compressed=True)
             
-            self.assertIsInstance(result, EBDImage)
-            self.assertEqual(result.mode, 9)
-            self.assertEqual(result.width, 153)
-            self.assertEqual(result.height, 153)
-            self.assertGreater(len(result.raw_data), 0)
+            assert isinstance(result, EBDImage)
+            assert result.mode == 9
+            assert result.width == 153
+            assert result.height == 153
+            assert len(result.raw_data) > 0
         finally:
             # Clean up
             if os.path.exists('test.svg'):
                 os.remove('test.svg')
 
-    def test_color_conversion(self):
+    @pytest.mark.asyncio
+    async def test_color_conversion(self, test_image):
         """Test that images are correctly converted to color mode"""
-        converter = EBDConverter(self.test_image)
-        result = converter.convert_colour(compressed=True)
+        converter = EBDConverter(test_image)
+        result = await converter.convert_colour(compressed=True)
         
-        self.assertIsInstance(result, EBDImage)
-        self.assertEqual(result.mode, 9)  # Mode 9 is compressed color
-        self.assertEqual(result.width, 50)  # Should be half the original width
-        self.assertEqual(result.height, 50)  # Should be half the original height
-        self.assertGreater(len(result.raw_data), 0)  # Should have some data
+        assert isinstance(result, EBDImage)
+        assert result.mode == 9  # Mode 9 is compressed color
+        assert result.width == 50  # Should be half the original width
+        assert result.height == 50  # Should be half the original height
+        assert len(result.raw_data) > 0  # Should have some data
 
-    def test_grayscale_conversion(self):
+    @pytest.mark.asyncio
+    async def test_grayscale_conversion(self, test_image):
         """Test that images are correctly converted to grayscale"""
-        converter = EBDConverter(self.test_image)
-        result = converter.convert_gs(depth=4, compressed=True)
+        converter = EBDConverter(test_image)
+        result = await converter.convert_gs(depth=4, compressed=True)
         
-        self.assertIsInstance(result, EBDImage)
-        self.assertEqual(result.mode, 4)  # Mode 4 is compressed 4-bit grayscale
-        self.assertEqual(result.width, 50)
-        self.assertEqual(result.height, 50)
-        self.assertGreater(len(result.raw_data), 0)
+        assert isinstance(result, EBDImage)
+        assert result.mode == 4  # Mode 4 is compressed 4-bit grayscale
+        assert result.width == 50
+        assert result.height == 50
+        assert len(result.raw_data) > 0
 
-    def test_bw_conversion(self):
+    @pytest.mark.asyncio
+    async def test_bw_conversion(self, test_image):
         """Test that images are correctly converted to black and white"""
-        converter = EBDConverter(self.test_image)
-        result = converter.convert_bw(compressed=True)
+        converter = EBDConverter(test_image)
+        result = await converter.convert_bw(compressed=True)
         
-        self.assertIsInstance(result, EBDImage)
-        self.assertEqual(result.mode, 1)  # Mode 1 is compressed black and white
-        self.assertEqual(result.width, 50)
-        self.assertEqual(result.height, 50)
-        self.assertGreater(len(result.raw_data), 0)
+        assert isinstance(result, EBDImage)
+        assert result.mode == 1  # Mode 1 is compressed black and white
+        assert result.width == 50
+        assert result.height == 50
+        assert len(result.raw_data) > 0
 
-    def test_tag_generation(self):
+    @pytest.mark.asyncio
+    async def test_tag_generation(self, test_image):
         """Test that EBDImage correctly generates HTML tags"""
-        converter = EBDConverter(self.test_image)
-        result = converter.convert_colour(compressed=True)
+        converter = EBDConverter(test_image)
+        result = await converter.convert_colour(compressed=True)
         
         # Test EBDIMAGE tag generation
         ebdimage_tag = result.generate_ebdimage_tag(name="1")
-        self.assertIn("<EBDIMAGE", ebdimage_tag)
-        self.assertIn('MODE="9"', ebdimage_tag)
-        self.assertIn('NAME="1"', ebdimage_tag)
+        assert "<EBDIMAGE" in ebdimage_tag
+        assert 'MODE="9"' in ebdimage_tag
+        assert 'NAME="1"' in ebdimage_tag
         
         # Test IMG tag generation
         img_tag = result.generate_img_tag(name="#1", alt_text="Test Image")
-        self.assertIn("<IMG", img_tag)
-        self.assertIn('ALT="Test Image"', img_tag)
-        self.assertIn('WIDTH="50"', img_tag)
-        self.assertIn('HEIGHT="50"', img_tag)
-        self.assertIn('EBD="#1"', img_tag)
-
-if __name__ == '__main__':
-    unittest.main()
+        assert "<IMG" in img_tag
+        assert 'ALT="Test Image"' in img_tag
+        assert 'WIDTH="50"' in img_tag
+        assert 'HEIGHT="50"' in img_tag
+        assert 'EBD="#1"' in img_tag

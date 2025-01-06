@@ -49,70 +49,108 @@ class EBDConverter:
     Convert from a PIL image to any of the modes known to be supported by Xiino.
     """
 
-    def __init__(
+    async def __convert_svg(self, svg_content: str, is_file: bool = False) -> PIL.Image.Image:
+        """Convert SVG to PNG with security checks"""
+        if len(svg_content.encode('utf-8')) > MAX_SVG_SIZE:
+            raise ValueError("SVG content exceeds maximum allowed size")
+            
+        try:
+            async with asyncio.timeout(SVG_PROCESSING_TIMEOUT):
+                # Run in executor to prevent blocking
+                png_data = await asyncio.to_thread(
+                    cairosvg.svg2png,
+                    url=svg_content if is_file else None,
+                    bytestring=svg_content.encode('utf-8') if not is_file else None,
+                    parent_width=306,  # Limit initial size
+                    parent_height=306
+                )
+                return PIL.Image.open(io.BytesIO(png_data))
+        except asyncio.TimeoutError:
+            raise TimeoutError("SVG processing timeout")
+        except Exception as e:
+            raise ValueError(f"Invalid SVG content: {str(e)}")
+
+    async def __ainit__(
         self, image: Union[PIL.Image.Image, str], override_scale_logic: bool = False
     ) -> None:
-        """Initialize with safety checks and limits"""
+        """Async initialization with safety checks and limits"""
         if isinstance(image, str):
             # Process SVG with security checks
             if image.lower().endswith('.svg') or '<svg' in image[:1000].lower():
-                # Check SVG size
-                if isinstance(image, str) and len(image.encode('utf-8')) > MAX_SVG_SIZE:
-                    raise ValueError("SVG content exceeds maximum allowed size")
-                
-                try:
-                    # Convert SVG with timeout
-                    async def convert_svg():
-                        return cairosvg.svg2png(
-                            url=image if image.lower().endswith('.svg') else None,
-                            bytestring=image.encode('utf-8') if not image.lower().endswith('.svg') else None,
-                            parent_width=306,  # Limit initial size
-                            parent_height=306
-                        )
-                    
-                    # Run SVG conversion with timeout
-                    png_data = asyncio.run(asyncio.wait_for(
-                        convert_svg(), 
-                        timeout=SVG_PROCESSING_TIMEOUT
-                    ))
-                    image = PIL.Image.open(io.BytesIO(png_data))
-                except asyncio.TimeoutError:
-                    raise TimeoutError("SVG processing timeout")
-                except Exception as e:
-                    raise ValueError(f"Invalid SVG content: {str(e)}")
+                image = await self.__convert_svg(image, is_file=image.lower().endswith('.svg'))
             else:
                 # Open regular image file with size validation
                 image = PIL.Image.open(image)
                 if image.width * image.height > 1000000:  # e.g. 1000x1000
                     raise ValueError("Image dimensions too large")
 
-        if not override_scale_logic:
-            if image.width > 306:
-                new_width = 153
-                new_height = math.ceil((image.height / image.width) * 153)
-            else:
-                new_width = math.ceil(image.width / 2)
-                new_height = math.ceil(image.height / 2)
-
-            image = image.resize((new_width, new_height))
-
-        # discard transparency... this'll help later, trust me
-        # do this by compositing the image onto a white background
+    def __init__(
+        self, image: Union[PIL.Image.Image, str], override_scale_logic: bool = False
+    ) -> None:
+        """Initialize with safety checks and limits"""
+        self._image = image
+        self._override_scale_logic = override_scale_logic
+        self._init_complete = asyncio.Event()
+        self.image = None
+        
+        # Start initialization
+        asyncio.create_task(self._initialize())
+        
+    async def _initialize(self) -> None:
+        """Initialize the converter asynchronously"""
         try:
-            if image.mode == "RGBA":
-                background = PIL.Image.new("RGBA", image.size, (255, 255, 255))
-                self.image = PIL.Image.alpha_composite(background, image).convert("RGB")
+            if isinstance(self._image, str):
+                # Process SVG with security checks
+                if self._image.lower().endswith('.svg') or '<svg' in self._image[:1000].lower():
+                    image = await self.__convert_svg(
+                        self._image, 
+                        is_file=self._image.lower().endswith('.svg')
+                    )
+                else:
+                    # Open regular image file with size validation
+                    image = PIL.Image.open(self._image)
+                    if image.width * image.height > 1000000:
+                        raise ValueError("Image dimensions too large")
             else:
-                self.image = image.convert("RGB")  # Just in case :)
-        except ValueError as exception_data:
-            image_logger.error(f"Image composite failed for size {image.size}")
-            raise exception_data
+                image = self._image
 
-    def convert_bw(self, compressed: bool = False) -> EBDImage:
+            # Apply scaling logic
+            if not self._override_scale_logic:
+                if image.width > 306:
+                    new_width = 153
+                    new_height = math.ceil((image.height / image.width) * 153)
+                else:
+                    new_width = math.ceil(image.width / 2)
+                    new_height = math.ceil(image.height / 2)
+
+                image = image.resize((new_width, new_height))
+
+            # Handle transparency
+            try:
+                if image.mode == "RGBA":
+                    background = PIL.Image.new("RGBA", image.size, (255, 255, 255))
+                    self.image = PIL.Image.alpha_composite(background, image).convert("RGB")
+                else:
+                    self.image = image.convert("RGB")  # Just in case :)
+            except ValueError as exception_data:
+                image_logger.error(f"Image composite failed for size {image.size}")
+                raise exception_data
+                
+            self._init_complete.set()
+        except Exception as e:
+            image_logger.error(f"Initialization failed: {str(e)}")
+            raise
+            
+    async def _ensure_initialized(self) -> None:
+        """Ensure the converter is initialized before operations"""
+        await self._init_complete.wait()
+
+    async def convert_bw(self, compressed: bool = False) -> EBDImage:
         """
         Convert the image to black and white (1-bit.)
         For greyscale, use `convert_gs`.
         """
+        await self._ensure_initialized()
         if compressed:
             return EBDImage(
                 self.__convert_mode1(),
@@ -127,12 +165,13 @@ class EBDConverter:
             mode=0,
         )
 
-    def convert_gs(self, depth=4, compressed: bool = False) -> EBDImage:
+    async def convert_gs(self, depth=4, compressed: bool = False) -> EBDImage:
         """
         Convert the image to greyscale.
         Defaults to 16-grey (4-bit) mode. For 4-grey (2-bit) mode,
         set `depth=2`.
         """
+        await self._ensure_initialized()
         if depth == 2:
             if compressed:
                 return EBDImage(
@@ -164,10 +203,9 @@ class EBDConverter:
         else:
             raise ValueError("Unsupported bit depth for greyscale.")
 
-    def convert_colour(self, compressed: bool = False) -> EBDImage:
+    async def convert_colour(self, compressed: bool = False) -> EBDImage:
         "Convert the image to 8-bit (231 colour)."
-        # TODO: uncompressed/mode8
-        # not hard but getting burned out
+        await self._ensure_initialized()
         if compressed:
             return EBDImage(
                 mode9.compress_mode9(self.image),
