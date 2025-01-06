@@ -75,11 +75,10 @@ class XiinoDataServer(BaseHTTPRequestHandler):
     def validate_url(self, url: str) -> bool:
         """Validate URL for security"""
         parsed = urlparse(url)
-        if not parsed.scheme in ('http', 'https'):
+        if not parsed.scheme in ('http', 'https', 'about'):
             return False
         if not parsed.netloc:
             return False
-        # Add additional validation as needed
         return True
         
     async def fetch_url(self, url: str) -> tuple[str, str, dict]:
@@ -134,15 +133,6 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(page_content.encode("latin-1", errors="replace"))
                 return
-                
-            if url.startswith("http://about/"):
-                url = "about:"
-            elif url == "http://github/":
-                url = "about:github"
-            elif url == "http://about2/":
-                url = "about:more"
-            elif url == "http://deviceinfo/":
-                url = "about:device"
                 
             if url.startswith("about:"):
                 # Get device info for device info page
@@ -234,8 +224,8 @@ if __name__ == "__main__":
         workers = multiprocessing.cpu_count()
 
     # Create and configure the server
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "4040"))
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8080"))
     
     # Create a single server instance that will be shared
     server = ThreadedHTTPServer((host, port), XiinoDataServer)
