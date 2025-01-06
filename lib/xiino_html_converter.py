@@ -22,6 +22,63 @@ supported_tags = [
     "TD", "TH", "TR", "TT", "U", "UL", "VAR", "XMP",
 ]
 
+# Define allowed attributes and their values per tag based on Xiino spec
+allowed_attributes = {
+    "A": {"HREF", "NAME", "TARGET", "ONCLICK"},
+    "AREA": {"COORDS", "HREF", "SHAPE", "TARGET", "NOHREF"},
+    "BASE": {"HREF"},
+    "BASEFONT": {"SIZE", "COLOR"},
+    "BODY": {"BGCOLOR", "TEXT", "LINK", "VLINK", "ALINK", "ONLOAD", "ONUNLOAD", "EBDWIDTH", "EBDHEIGHT"},
+    "BR": {"CLEAR"},  # Values: NONE, LEFT, RIGHT, ALL
+    "DIV": {"ALIGN"},  # Values: LEFT, CENTER, RIGHT
+    "DL": {"COMPACT"},
+    "FORM": {"LOCAL", "METHOD", "ACTION", "ONRESET", "ONSUBMIT"},
+    "FRAME": {"SRC", "NAME"},
+    "FRAMESET": {"COLS", "ROWS"},
+    "H1": {"ALIGN"},
+    "H2": {"ALIGN"},
+    "H3": {"ALIGN"},
+    "H4": {"ALIGN"},
+    "H5": {"ALIGN"},
+    "H6": {"ALIGN"},
+    "HR": {"SIZE", "WIDTH", "NOSHADE", "ALIGN"},  # ALIGN values: LEFT, CENTER, RIGHT
+    "IMG": {"WIDTH", "HEIGHT", "BORDER", "HSPACE", "VSPACE", "ALIGN", "ISMAP", "USEMAP", "ALT", "SRC"},
+    "INPUT": {"NAME", "VALUE", "TYPE", "MAXLENGTH", "SIZE", "DISABLED", "CHECKED", "ONBLUR", "ONCHANGE", "ONCLICK", "ONFOCUS", "ONSCAN", "ONSELECT"},
+    "LI": {"TYPE", "VALUE"},
+    "MAP": {"NAME"},
+    "META": {"CONTENT", "HTTP-EQUIV", "NAME"},
+    "OL": {"START", "TYPE"},
+    "OPTION": {"VALUE", "SELECTED"},
+    "P": {"ALIGN"},
+    "SCRIPT": {"LANGUAGE"},
+    "SELECT": {"MULTIPLE", "NAME", "ONCHANGE"},
+    "TABLE": {"BORDER", "ALIGN", "BGCOLOR", "CELLPADDING", "CELLSPACING"},
+    "TD": {"COLSPAN", "ROWSPAN", "WIDTH", "HEIGHT", "NOWRAP", "ALIGN", "VALIGN", "BGCOLOR", "TEXTAREA", "NAME", "DISABLED"},
+    "TH": {"COLSPAN", "ROWSPAN", "WIDTH", "HEIGHT", "NOWRAP", "ALIGN", "VALIGN", "BGCOLOR", "TITLE"},
+    "TR": {"ALIGN", "VALIGN", "BGCOLOR"},
+    "UL": {"TYPE"},
+}
+
+# Define allowed values for specific attributes
+allowed_values = {
+    "BR.CLEAR": {"NONE", "LEFT", "RIGHT", "ALL"},
+    "DIV.ALIGN": {"LEFT", "CENTER", "RIGHT"},
+    "HR.ALIGN": {"LEFT", "CENTER", "RIGHT"},
+    "IMG.ALIGN": {"LEFT", "RIGHT", "TOP", "ABSMIDDLE", "ABSBOTTOM", "TEXTTOP", "MIDDLE", "BASELINE", "BOTTOM"},
+    "INPUT.TYPE": {"SUBMIT", "RESET", "IMAGE", "BUTTON", "RADIO", "CHECKBOX", "HIDDEN", "PASSWORD", "TEXT"},
+    "LI.TYPE": {"1", "A", "a", "I", "i", "DISC", "CIRCLE", "SQUARE"},
+    "OL.TYPE": {"1", "A", "a", "I", "i"},
+    "TD.ALIGN": {"LEFT", "CENTER", "RIGHT"},
+    "TD.VALIGN": {"TOP", "BOTTOM", "MIDDLE", "BASELINE"},
+    "TH.ALIGN": {"LEFT", "CENTER", "RIGHT"},
+    "TH.VALIGN": {"TOP", "BOTTOM", "MIDDLE", "BASELINE"},
+    "TR.ALIGN": {"LEFT", "CENTER", "RIGHT"},
+    "TR.VALIGN": {"TOP", "BOTTOM", "MIDDLE", "BASELINE"},
+    "UL.TYPE": {"DISC", "CIRCLE", "SQUARE"},
+    "FORM.METHOD": {"GET", "POST"},
+    "AREA.SHAPE": {"CIRCLE", "POLY", "POLYGON", "RECT"},
+}
+
 class XiinoHTMLParser(HTMLParser):
     "Parse HTML to Xiino spec."
 
@@ -39,6 +96,31 @@ class XiinoHTMLParser(HTMLParser):
         self.grayscale_depth = grayscale_depth
         self.pending_images = []
         super().__init__(convert_charrefs=convert_charrefs)
+
+    def _filter_attributes(self, tag: str, attrs: list) -> list:
+        """Filter attributes based on Xiino specifications."""
+        if tag.upper() not in allowed_attributes:
+            return []
+        
+        allowed_attrs = allowed_attributes[tag.upper()]
+        filtered_attrs = []
+        
+        for attr_name, attr_value in attrs:
+            attr_name = attr_name.upper()
+            if attr_name in allowed_attrs:
+                # Check if this attribute has value restrictions
+                value_key = f"{tag.upper()}.{attr_name}"
+                if value_key in allowed_values:
+                    # If the attribute value is restricted, validate it
+                    if attr_value.upper() in allowed_values[value_key]:
+                        filtered_attrs.append((attr_name, attr_value))
+                    else:
+                        html_logger.warning(f"Invalid value '{attr_value}' for attribute {attr_name} in tag {tag}")
+                else:
+                    # If no value restrictions, keep the attribute
+                    filtered_attrs.append((attr_name, attr_value))
+                    
+        return filtered_attrs
 
     def handle_starttag(self, tag, attrs):
         if tag.upper() in supported_tags:
@@ -66,9 +148,12 @@ class XiinoHTMLParser(HTMLParser):
 
                 self.parsing_supported_tag = True
                 self.__parsed_data_buffer += f"<{tag.upper()}"
-                if attrs:
+                
+                # Filter attributes according to Xiino spec
+                filtered_attrs = self._filter_attributes(tag, attrs)
+                if filtered_attrs:
                     self.__parsed_data_buffer += " " + " ".join(
-                        f'{x[0].upper()}="{x[1]}"' for x in attrs
+                        f'{x[0].upper()}="{x[1]}"' for x in filtered_attrs
                     )
                 self.__parsed_data_buffer += ">\n"
         else:

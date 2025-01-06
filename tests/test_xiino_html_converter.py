@@ -86,3 +86,109 @@ async def test_html_parsing(parser, mock_aiohttp, base_url):
     assert "EBD=" in result  # Has EBD reference
     assert "<EBDIMAGE" in result  # EBDIMAGE tag exists
     assert "MODE=" in result  # Has mode specified
+
+@pytest.mark.asyncio
+async def test_allowed_attributes(parser):
+    """Test that allowed attributes are preserved while disallowed ones are filtered"""
+    test_html = """
+    <div align="center" nonexistent="value">Centered Text</div>
+    <tr align="left" valign="top" style="color: red;">
+        <td width="100" height="50" nonexistent="value">Cell Content</td>
+    </tr>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    # Verify allowed attributes are preserved
+    assert 'ALIGN="center"' in result
+    assert 'ALIGN="left"' in result
+    assert 'VALIGN="top"' in result
+    assert 'WIDTH="100"' in result
+    assert 'HEIGHT="50"' in result
+    
+    # Verify disallowed attributes are filtered out
+    assert 'nonexistent=' not in result
+    assert 'style=' not in result
+
+@pytest.mark.asyncio
+async def test_attribute_values(parser):
+    """Test that allowed attribute values are preserved while disallowed ones are filtered"""
+    test_html = """
+    <div align="invalid">Invalid Align</div>
+    <div align="center">Valid Center</div>
+    <tr align="left" valign="invalid">
+        <td align="right" valign="top">Valid Values</td>
+    </tr>
+    <ul type="disc">Valid List</ul>
+    <ul type="invalid">Invalid List</ul>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    # Verify allowed values are preserved
+    assert 'ALIGN="center"' in result
+    assert 'ALIGN="left"' in result
+    assert 'ALIGN="right"' in result
+    assert 'VALIGN="top"' in result
+    assert 'TYPE="disc"' in result
+    
+    # Verify disallowed values are filtered out
+    assert 'ALIGN="invalid"' not in result
+    assert 'VALIGN="invalid"' not in result
+    assert 'TYPE="invalid"' not in result
+
+@pytest.mark.asyncio
+async def test_form_attributes(parser):
+    """Test form-specific attributes and values"""
+    test_html = """
+    <form method="post" action="/submit" invalid="attr">
+        <input type="text" name="username" maxlength="50">
+        <input type="invalid" name="test">
+        <input type="submit" value="Submit">
+    </form>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    # Verify allowed form attributes and values
+    assert 'METHOD="post"' in result
+    assert 'ACTION="/submit"' in result
+    assert 'TYPE="text"' in result
+    assert 'NAME="username"' in result
+    assert 'MAXLENGTH="50"' in result
+    assert 'TYPE="submit"' in result
+    
+    # Verify disallowed attributes and values are filtered
+    assert 'invalid=' not in result
+    assert 'TYPE="invalid"' not in result
+
+@pytest.mark.asyncio
+async def test_table_attributes(parser):
+    """Test table-specific attributes and values"""
+    test_html = """
+    <table border="1" cellpadding="5" invalid="attr">
+        <tr align="center" valign="middle">
+            <th align="left" valign="top">Header</th>
+            <td align="right" valign="bottom">Cell</td>
+        </tr>
+    </table>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    # Verify allowed table attributes and values
+    assert 'BORDER="1"' in result
+    assert 'CELLPADDING="5"' in result
+    assert 'ALIGN="center"' in result
+    assert 'VALIGN="middle"' in result
+    assert 'ALIGN="left"' in result
+    assert 'VALIGN="top"' in result
+    assert 'ALIGN="right"' in result
+    assert 'VALIGN="bottom"' in result
+    
+    # Verify disallowed attributes are filtered
+    assert 'invalid=' not in result
