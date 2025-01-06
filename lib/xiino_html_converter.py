@@ -1,6 +1,3 @@
-import os
-import random
-import asyncio
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 from PIL import Image, UnidentifiedImageError
