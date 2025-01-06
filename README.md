@@ -1,4 +1,4 @@
-# OpenXiino
+# OpenXiino (FP Remix)
 
 > **Note:** This is a working development fork and should be considered highly unstable. Use [nicl83/OpenXiino](https://github.com/nicl83/OpenXiino) if you're not looking to explore something very new. **Absolutely no support** will be given for this fork until it reaches stability and use in its parent project.
 
@@ -12,7 +12,7 @@ The original OpenXiino was meant to be a "MVP" for using the Xiino browser.
 
 In order to better support some parts of the modern Web, this fork is developing a series of upgrades:
 
-- Some bug fixes around OpenXiino's image color indexing
+- Some bug fixes around OpenXiino's image color
 - Docker container support
 - Fully configurable via environment variables
 - Asynchronous, multi-CPU capable server, using `aiohttp`
