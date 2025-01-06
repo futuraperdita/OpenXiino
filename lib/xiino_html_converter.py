@@ -1,7 +1,8 @@
 import os
-import requests
 import random
+import asyncio
 from lib.xiino_image_converter import EBDConverter
+from lib.httpclient import fetch_binary
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 from PIL import Image, UnidentifiedImageError
@@ -94,18 +95,6 @@ class XiinoHTMLParser(HTMLParser):
         self.base_url = base_url
         self.grayscale_depth = grayscale_depth
 
-        self.requests_headers = {
-            "User-Agent": "OpenXiino/1.0 (http://github.com/nicl83/openxiino) python-requests/2.27.1"
-        }
-        
-        # Configure proxy settings if available
-        self.proxies = None
-        socks_proxy = os.getenv('SOCKS5_PROXY')
-        if socks_proxy:
-            self.proxies = {
-                'http': socks_proxy,
-                'https': socks_proxy
-            }
 
         super().__init__(convert_charrefs=convert_charrefs)
 
@@ -188,13 +177,11 @@ class XiinoHTMLParser(HTMLParser):
         else:
             # Handle regular URLs
             full_url = urljoin(self.base_url, url)
+            # Use asyncio to run the async fetch_binary in a sync context
             image_buffer = BytesIO(
-                requests.get(
-                    full_url,
-                    timeout=5,
-                    headers=self.requests_headers,
-                    proxies=self.proxies
-                ).content
+                asyncio.get_event_loop().run_until_complete(
+                    fetch_binary(full_url)
+                )
             )
 
         try:
