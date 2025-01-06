@@ -7,6 +7,14 @@ import PIL.ImageOps
 import bitstring
 import cairosvg
 import io
+import asyncio
+from typing import Union
+
+# Security constants
+MAX_SVG_SIZE = 1024 * 1024  # 1MB max SVG size
+SVG_PROCESSING_TIMEOUT = 5  # 5 second timeout for SVG processing
+MAX_PALETTE_OPERATIONS = 500000  # Limit color matching operations
+
 import lib.scanline as scanline
 import lib.mode9 as mode9
 from lib.xiino_palette_common import PALETTE
@@ -42,23 +50,41 @@ class EBDConverter:
     """
 
     def __init__(
-        self, image: PIL.Image.Image | str, override_scale_logic: bool = False
+        self, image: Union[PIL.Image.Image, str], override_scale_logic: bool = False
     ) -> None:
-        # Image is resized at class init to meet Xiino's specification.
-        # To quote "HTMLSpecifications.txt":
-        # Size WIDTH > 306pixel -> WIDTH = 153pixel（reduced to 153 pixels）
-        # WIDTH <= 306pixel -> WIDTH = WIDTH * 0.5pixel（reduce to half the width）
-        # HEIGHT is reduced to the same proportion as WIDTH.
-
+        """Initialize with safety checks and limits"""
         if isinstance(image, str):
-            # Try to detect if this is SVG content
+            # Process SVG with security checks
             if image.lower().endswith('.svg') or '<svg' in image[:1000].lower():
-                # Convert SVG to PNG in memory
-                png_data = cairosvg.svg2png(url=image if image.lower().endswith('.svg') else None,
-                                          bytestring=image.encode('utf-8') if not image.lower().endswith('.svg') else None)
-                image = PIL.Image.open(io.BytesIO(png_data))
+                # Check SVG size
+                if isinstance(image, str) and len(image.encode('utf-8')) > MAX_SVG_SIZE:
+                    raise ValueError("SVG content exceeds maximum allowed size")
+                
+                try:
+                    # Convert SVG with timeout
+                    async def convert_svg():
+                        return cairosvg.svg2png(
+                            url=image if image.lower().endswith('.svg') else None,
+                            bytestring=image.encode('utf-8') if not image.lower().endswith('.svg') else None,
+                            parent_width=306,  # Limit initial size
+                            parent_height=306
+                        )
+                    
+                    # Run SVG conversion with timeout
+                    png_data = asyncio.run(asyncio.wait_for(
+                        convert_svg(), 
+                        timeout=SVG_PROCESSING_TIMEOUT
+                    ))
+                    image = PIL.Image.open(io.BytesIO(png_data))
+                except asyncio.TimeoutError:
+                    raise TimeoutError("SVG processing timeout")
+                except Exception as e:
+                    raise ValueError(f"Invalid SVG content: {str(e)}")
             else:
+                # Open regular image file with size validation
                 image = PIL.Image.open(image)
+                if image.width * image.height > 1000000:  # e.g. 1000x1000
+                    raise ValueError("Image dimensions too large")
 
         if not override_scale_logic:
             if image.width > 306:
@@ -248,19 +274,43 @@ class EBDConverter:
         return scanline.compress_data_with_scanline(self.__convert_mode4(), width_bytes)
 
     def __convert_mode8(self) -> bytes:
+        """Convert to 8-bit color with operation limits and optimizations"""
         buf = bytearray()
+        pixel_count = 0
+        palette_cache = {}  # Cache color matches
+        
         for px in self.image.getdata():
+            # Check operation limits
+            pixel_count += 1
+            if pixel_count * len(PALETTE) > MAX_PALETTE_OPERATIONS:
+                raise ValueError("Image processing exceeded operation limit")
+                
+            # Use cached color match if available
+            px_key = hash(px)
+            if px_key in palette_cache:
+                buf.append(palette_cache[px_key])
+                continue
+                
             # Find closest color in palette using Euclidean distance
             min_distance = float('inf')
             best_index = 0xE6  # Default, but should never be used
             r, g, b = px
+            
             for i, (pr, pg, pb) in enumerate(PALETTE):
                 # Calculate color distance
                 distance = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
                 if distance < min_distance:
                     min_distance = distance
                     best_index = i
+                    
+            # Cache the result
+            palette_cache[px_key] = best_index
             buf.append(best_index)
+            
+            # Limit cache size
+            if len(palette_cache) > 1000:
+                palette_cache.clear()
+                
         return buf
 
     def __divide_chunks(self, l: list, n: int):

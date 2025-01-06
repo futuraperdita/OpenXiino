@@ -6,7 +6,7 @@ from lib.logger import server_logger
 DEFAULT_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "5"))
 DEFAULT_USER_AGENT = os.getenv(
     "USER_AGENT",
-    "OpenXiino/1.0 (http://github.com/nicl83/openxiino) python-requests/2.27.1"
+    "OpenXiino/1.0 (http://github.com/nicl83/openxiino)"
 )
 
 # Configure proxy if available

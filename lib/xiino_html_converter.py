@@ -1,8 +1,21 @@
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 import base64
+import re
+import asyncio
+
+# Security constants
+MAX_IMAGE_SIZE = 1024 * 1024 * 5  # 5MB max image size
+MAX_IMAGE_DIMENSIONS = (2048, 2048)  # Max width/height
+MAX_IMAGES_PER_PAGE = 50  # Maximum number of images per page
+IMAGE_PROCESSING_TIMEOUT = 10  # 10 second timeout for image processing
+MAX_DATA_URL_SIZE = 1024 * 1024  # 1MB max for data URLs
+ALLOWED_IMAGE_MIME_TYPES = {
+    'image/jpeg', 'image/png', 'image/gif', 
+    'image/svg+xml', 'image/webp'
+}
 
 from lib.xiino_image_converter import EBDConverter
 from lib.httpclient import fetch_binary
@@ -86,6 +99,7 @@ class XiinoHTMLParser(HTMLParser):
         convert_charrefs: bool = True,
         grayscale_depth: int | None = None
     ) -> None:
+        self.image_count = 0  # Track number of images processed
         self.parsing_supported_tag = True
         self.__parsed_data_buffer = ""
         self.ebd_image_tags = []
@@ -166,60 +180,128 @@ class XiinoHTMLParser(HTMLParser):
         if tag.upper() in supported_tags:
             self.__parsed_data_buffer += f"</{tag.upper()}>\n"
 
-    async def parse_image(self, url: str):
+    def validate_image_url(self, url: str) -> bool:
+        """Validate image URL for security"""
         if url.startswith('data:'):
-            # Handle data: URLs
+            # Validate data URL format and size
             try:
-                # Split into metadata and base64 content
-                header, base64_data = url.split(',', 1)
-                # Check if this is an SVG
-                if 'svg+xml' in header.lower():
-                    # Decode SVG XML and pass directly to EBDConverter
-                    svg_content = base64.b64decode(base64_data).decode('utf-8')
-                    image_buffer = svg_content
-                else:
-                    # Create buffer directly from base64 data for other formats
-                    image_buffer = BytesIO()
-                    image_buffer.write(base64.b64decode(base64_data))
-                    image_buffer.seek(0)
-            except Exception as e:
-                html_logger.warning(f"Failed to decode data: URL - {str(e)}")
-                self.__parsed_data_buffer += "<p>[Invalid data: URL image]</p>"
-                return
+                header, b64data = url.split(',', 1)
+                if not header.startswith('data:image/'):
+                    return False
+                    
+                mime_type = re.match(r'data:(image/[^;,]+)', header)
+                if not mime_type or mime_type.group(1) not in ALLOWED_IMAGE_MIME_TYPES:
+                    return False
+                    
+                # Check data URL size
+                if len(b64data) > MAX_DATA_URL_SIZE:
+                    return False
+                    
+                return True
+            except:
+                return False
         else:
-            # Handle regular URLs
-            full_url = urljoin(self.base_url, url)
-            # Fetch image data asynchronously
-            image_data = await fetch_binary(full_url)
-            image_buffer = BytesIO(image_data)
+            # Validate regular URLs
+            parsed = urlparse(url)
+            return bool(parsed.scheme in ('http', 'https') and parsed.netloc)
+
+    async def parse_image(self, url: str):
+        # Check image count limit
+        if self.image_count >= MAX_IMAGES_PER_PAGE:
+            html_logger.warning(f"Too many images on page: {url}")
+            self.__parsed_data_buffer += "<p>[Image limit exceeded]</p>"
+            return
+            
+        # Validate URL
+        if not self.validate_image_url(url):
+            html_logger.warning(f"Invalid image URL: {url}")
+            self.__parsed_data_buffer += "<p>[Invalid image URL]</p>"
+            return
 
         try:
-            image = Image.open(image_buffer)
-        except UnidentifiedImageError as exception_info:
-            html_logger.warning(f"Unsupported image format at {url}: {exception_info.args[0]}")
-            self.__parsed_data_buffer += "<p>[Unsupported image]</p>"
-            image_buffer.close()
-            return
+            async with asyncio.timeout(IMAGE_PROCESSING_TIMEOUT):
+                if url.startswith('data:'):
+                    try:
+                        # Split into metadata and base64 content
+                        header, base64_data = url.split(',', 1)
+                        # Check if this is an SVG
+                        if 'svg+xml' in header.lower():
+                            # Decode SVG XML and pass directly to EBDConverter
+                            svg_content = base64.b64decode(base64_data).decode('utf-8')
+                            image_buffer = svg_content
+                        else:
+                            # Create buffer directly from base64 data for other formats
+                            image_buffer = BytesIO()
+                            image_buffer.write(base64.b64decode(base64_data))
+                            image_buffer.seek(0)
+                            
+                            # Check size before processing
+                            if image_buffer.getbuffer().nbytes > MAX_IMAGE_SIZE:
+                                html_logger.warning(f"Image too large: {url}")
+                                self.__parsed_data_buffer += "<p>[Image too large]</p>"
+                                return
+                    except Exception as e:
+                        html_logger.warning(f"Failed to decode data: URL - {str(e)}")
+                        self.__parsed_data_buffer += "<p>[Invalid data: URL image]</p>"
+                        return
+                else:
+                    # Handle regular URLs
+                    full_url = urljoin(self.base_url, url)
+                    # Fetch image data asynchronously
+                    image_data = await fetch_binary(full_url)
+                    
+                    # Check size before processing
+                    if len(image_data) > MAX_IMAGE_SIZE:
+                        html_logger.warning(f"Image too large: {url}")
+                        self.__parsed_data_buffer += "<p>[Image too large]</p>"
+                        return
+                        
+                    image_buffer = BytesIO(image_data)
 
-        # pre-filter images
-        if image.width / 2 <= 1 or image.width / 2 <= 1:
-            html_logger.warning(f"Image too small at {url}")
-            self.__parsed_data_buffer += "<p>[Unsupported image]</p>"
-            return
+                try:
+                    image = Image.open(image_buffer)
+                    
+                    # Validate image dimensions
+                    if image.width > MAX_IMAGE_DIMENSIONS[0] or image.height > MAX_IMAGE_DIMENSIONS[1]:
+                        html_logger.warning(f"Image dimensions too large: {url}")
+                        self.__parsed_data_buffer += "<p>[Image dimensions too large]</p>"
+                        image_buffer.close()
+                        return
+                        
+                    # pre-filter images
+                    if image.width / 2 <= 1 or image.height / 2 <= 1:
+                        html_logger.warning(f"Image too small at {url}")
+                        self.__parsed_data_buffer += "<p>[Image too small]</p>"
+                        return
 
-        ebd_converter = EBDConverter(image)
+                    ebd_converter = EBDConverter(image)
 
-        if self.grayscale_depth:
-            image_data = ebd_converter.convert_gs(depth=self.grayscale_depth, compressed=True)
-        else:
-            image_data = ebd_converter.convert_colour(compressed=True)
+                    if self.grayscale_depth:
+                        image_data = ebd_converter.convert_gs(depth=self.grayscale_depth, compressed=True)
+                    else:
+                        image_data = ebd_converter.convert_colour(compressed=True)
 
-        ebd_ref = len(self.ebd_image_tags) + 1  # get next "slot"
-        self.__parsed_data_buffer += (
-            image_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
-        )
-        self.ebd_image_tags.append(image_data.generate_ebdimage_tag(name=ebd_ref))
-        image_buffer.close()
+                    ebd_ref = len(self.ebd_image_tags) + 1  # get next "slot"
+                    self.__parsed_data_buffer += (
+                        image_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
+                    )
+                    self.ebd_image_tags.append(image_data.generate_ebdimage_tag(name=ebd_ref))
+                    image_buffer.close()
+                    
+                    # Increment image count
+                    self.image_count += 1
+                    
+                except UnidentifiedImageError as exception_info:
+                    html_logger.warning(f"Unsupported image format at {url}: {exception_info.args[0]}")
+                    self.__parsed_data_buffer += "<p>[Unsupported image]</p>"
+                    image_buffer.close()
+                
+        except asyncio.TimeoutError:
+            html_logger.warning(f"Image processing timeout: {url}")
+            self.__parsed_data_buffer += "<p>[Image processing timeout]</p>"
+        except Exception as e:
+            html_logger.error(f"Error processing image {url}: {str(e)}")
+            self.__parsed_data_buffer += "<p>[Image processing error]</p>"
 
     async def feed_async(self, data: str):
         """Asynchronously feed data to the parser."""

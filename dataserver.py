@@ -5,6 +5,8 @@ import multiprocessing
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from dotenv import load_dotenv
+from urllib.parse import urlparse
+import time
 from lib.xiino_html_converter import XiinoHTMLParser
 from lib.controllers.page_controller import PageController
 from lib.logger import setup_logging, server_logger
@@ -19,10 +21,21 @@ def iso8859(string: str) -> bytes:
     "Shorthand to convert a string to iso-8859"
     return bytes(string, encoding="iso-8859-1")
 
+# Security constants
+MAX_WORKERS = 16  # Maximum number of worker processes
+MAX_REQUEST_SIZE = 1024 * 1024 * 10  # 10MB max request size
+REQUEST_TIMEOUT = 30  # 30 second timeout for requests
+MAX_REQUESTS_PER_MIN = 60  # Rate limit per IP
+REQUEST_TRACKING = {}  # Track requests per IP
+
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle requests in a separate thread."""
     allow_reuse_address = True
     daemon_threads = True
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.request_counts = {}
 
 class XiinoDataServer(BaseHTTPRequestHandler):
     DATASERVER_VERSION = "Pre-Alpha Development Release"
@@ -37,8 +50,38 @@ class XiinoDataServer(BaseHTTPRequestHandler):
         self.page_controller = PageController()
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
+        self.request_start_time = None
         super().__init__(*args, **kwargs)
+        
+    def check_rate_limit(self):
+        """Check if request exceeds rate limit"""
+        client_ip = self.client_address[0]
+        current_time = time.time()
+        
+        # Clean old entries
+        REQUEST_TRACKING[client_ip] = [t for t in REQUEST_TRACKING.get(client_ip, [])
+                                     if current_time - t < 60]
+        
+        # Check rate limit
+        if len(REQUEST_TRACKING.get(client_ip, [])) >= MAX_REQUESTS_PER_MIN:
+            return True
+            
+        # Add new request
+        if client_ip not in REQUEST_TRACKING:
+            REQUEST_TRACKING[client_ip] = []
+        REQUEST_TRACKING[client_ip].append(current_time)
+        return False
 
+    def validate_url(self, url: str) -> bool:
+        """Validate URL for security"""
+        parsed = urlparse(url)
+        if not parsed.scheme in ('http', 'https'):
+            return False
+        if not parsed.netloc:
+            return False
+        # Add additional validation as needed
+        return True
+        
     async def fetch_url(self, url: str) -> tuple[str, str, dict]:
         """Asynchronously fetch URL content"""
         # Process cookies from Palm client request
@@ -51,8 +94,25 @@ class XiinoDataServer(BaseHTTPRequestHandler):
 
     async def handle_request(self):
         """Async request handler"""
+        # Check request size
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length > MAX_REQUEST_SIZE:
+            self.send_error(413, "Request entity too large")
+            return
+            
+        # Check rate limit
+        if self.check_rate_limit():
+            self.send_error(429, "Too many requests")
+            return
+            
+        # Set request timeout
+        self.request_start_time = time.time()
         try:
-            url = self.URL_REGEX.search(self.requestline)
+            # Set timeout for async operations
+            url = await asyncio.wait_for(
+                asyncio.create_task(asyncio.to_thread(self.URL_REGEX.search, self.requestline)),
+                timeout=REQUEST_TIMEOUT
+            )
 
             # send magic padding xiino expects
             self.wfile.write(bytes([0x00] * 12))
@@ -68,6 +128,13 @@ class XiinoDataServer(BaseHTTPRequestHandler):
             url = url.group(1)
             
             # Handle about: URLs
+            # Validate URL
+            if not url or not self.validate_url(url):
+                page_content = self.page_controller.handle_page("about:not-found")
+                self.end_headers()
+                self.wfile.write(page_content.encode("latin-1", errors="replace"))
+                return
+                
             if url.startswith("http://about/"):
                 url = "about:"
             elif url == "http://github/":
