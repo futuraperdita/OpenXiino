@@ -326,8 +326,6 @@ class XiinoHTMLParser(HTMLParser):
                 is_svg = await self._check_svg_content(image_buffer)
                 
             converter = await self._create_converter(image_buffer, is_svg)
-            await converter._ensure_initialized()
-            
             ebd_data = await self._convert_image(converter)
             await self._handle_converted_image(ebd_data, url, buffer_index, start_time)
             
