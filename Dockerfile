@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-dev \
+    build-essential \
+    libffi-dev \
     libcairo2 \
     libcairo2-dev \
     pkg-config \

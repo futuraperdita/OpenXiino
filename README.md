@@ -16,6 +16,7 @@ In order to better support some parts of the modern Web, this fork is developing
 - Fully configurable via environment variables
 - `aiohttp` based, async request handling
 - `numpy`-vectorized image conversion and compression
+- Opportunistic attempts at upgrading outbound connections to HTTPS
 - Better image conversion using human-perceptual color algorithms and dithering
 - Improved error handling
 - Ability to set various client limits, such as overall page weight and request rate limits
