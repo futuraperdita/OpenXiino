@@ -11,7 +11,7 @@ load_dotenv()
 DEFAULT_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "5"))
 DEFAULT_USER_AGENT = os.getenv(
     "USER_AGENT",
-    "OpenXiino/1.0 (http://github.com/nicl83/openxiino)"
+    "Mozilla/1.22 (compatible; MSIE 5.01; PalmOS 3.0) OpenXiino/1.0; 160x160"
 )
 MAX_PAGE_SIZE = int(os.getenv('MAX_PAGE_SIZE', 100)) * 1024  # Convert KB to bytes
 
@@ -90,21 +90,42 @@ async def fetch(
                 response_cookies
             )
 
-async def fetch_binary(url: str) -> bytes:
+async def fetch_binary(
+    url: str,
+    *,
+    cookies: Optional[Dict[str, str]] = None,
+    timeout: Optional[float] = None
+) -> Tuple[bytes, Dict[str, str]]:
     """
     Fetch binary content (like images) using aiohttp.
+    Returns (content, cookies)
     """
+    timeout_value = aiohttp.ClientTimeout(total=timeout or DEFAULT_TIMEOUT)
     headers = {"User-Agent": DEFAULT_USER_AGENT}
     
-    async with aiohttp.ClientSession() as session:
+    server_logger.debug(f"Starting binary fetch for URL: {url}")
+    if cookies:
+        server_logger.debug(f"Using cookies: {cookies}")
+    
+    async with aiohttp.ClientSession(cookie_jar=None) as session:
         async with session.get(
             url,
             headers=headers,
+            cookies=cookies,
             proxy=PROXY,
-            timeout=DEFAULT_TIMEOUT,
+            timeout=timeout_value,
             allow_redirects=True,  # Explicitly enable redirects (including HTTP->HTTPS)
             max_redirects=10
         ) as response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Binary fetch connection upgraded to HTTPS: {response.url}")
-            return await response.read()
+            # Get response cookies
+            response_cookies = {}
+            for cookie_name, cookie_morsel in response.cookies.items():
+                response_cookies[cookie_name] = cookie_morsel.value
+                
+            content = await response.read()
+            server_logger.debug(f"Binary fetch completed, content size: {len(content)} bytes")
+            server_logger.debug(f"Response cookies: {response_cookies}")
+            
+            return content, response_cookies

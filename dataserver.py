@@ -166,7 +166,13 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                     fetch_start = time.time()
                     server_logger.info("Fetching external URL: %s" % url)
                     try:
-                        content, response_url, response_cookies = await self.fetch_url(url)
+                        # Get cookies for both main request and subsequent image requests
+                        request_cookies = CookieManager.prepare_request_cookies(
+                            self.headers.get('Cookie'),
+                            url
+                        )
+                        
+                        content, response_url, response_cookies = await fetch(url, cookies=request_cookies)
                         fetch_duration = time.time() - fetch_start
                         server_logger.debug(f"URL fetch completed in {fetch_duration:.2f}s")
                         
@@ -192,7 +198,8 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                     try:
                         parser = XiinoHTMLParser(
                             base_url=response_url,
-                            grayscale_depth=grayscale_depth
+                            grayscale_depth=grayscale_depth,
+                            cookies=request_cookies  # Pass cookies from the request
                         )
                         server_logger.debug(f"Processing URL: {response_url}")
                         await parser.feed_async(content)

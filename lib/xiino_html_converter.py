@@ -107,8 +107,10 @@ class XiinoHTMLParser(HTMLParser):
         *,
         base_url,
         convert_charrefs: bool = True,
-        grayscale_depth: int | None = None
+        grayscale_depth: int | None = None,
+        cookies: dict | None = None
     ) -> None:
+        self.cookies = cookies  # Store cookies for image requests
         self.image_count = 0  # Track number of images processed
         self.parsing_supported_tag = True
         self.__parsed_data_buffer = []  # List of content chunks
@@ -291,7 +293,7 @@ class XiinoHTMLParser(HTMLParser):
                     # Handle regular URLs
                     full_url = urljoin(self.base_url, url)
                     # Fetch image data asynchronously
-                    image_data = await fetch_binary(full_url)
+                    image_data, response_cookies = await fetch_binary(full_url, cookies=self.cookies)
                     
                     # Check size before processing
                     if len(image_data) > MAX_IMAGE_SIZE:
