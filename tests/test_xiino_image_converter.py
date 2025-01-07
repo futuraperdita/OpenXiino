@@ -3,7 +3,14 @@ from PIL import Image
 import io
 import os
 import asyncio
+import numpy as np
 from lib.xiino_image_converter import EBDConverter, EBDImage, MAX_SVG_SIZE
+from lib.dithering import apply_floyd_steinberg_dithering, apply_ordered_dithering
+from lib.color_matching import (
+    find_closest_color,
+    find_closest_gray,
+    PALETTE_ARRAY
+)
 
 TEST_SVG = '''<?xml version="1.0" encoding="UTF-8"?>
 <svg width="400" height="400" version="1.1" viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg">
@@ -25,6 +32,17 @@ def test_image():
     for x in range(75):
         for y in range(75):
             image.putpixel((x, y), (0, 0, 0))
+    return image
+
+@pytest.fixture
+def gradient_image():
+    # Create a gradient image to better test dithering
+    image = Image.new('RGB', (100, 100))
+    for y in range(100):
+        for x in range(100):
+            # Create a horizontal gradient from black to white
+            value = int(255 * x / 100)
+            image.putpixel((x, y), (value, value, value))
     return image
 
 @pytest.fixture
@@ -211,6 +229,24 @@ class TestEBDConverter:
         await converter.cleanup()
 
     @pytest.mark.asyncio
+    async def test_dithering_priority(self, gradient_image, monkeypatch):
+        """Test that dithering method changes based on IMAGE_DITHER_PRIORITY"""
+        # Test with quality (Floyd-Steinberg) dithering
+        monkeypatch.setenv('IMAGE_DITHER_PRIORITY', 'quality')
+        converter_quality = EBDConverter(gradient_image)
+        result_quality = await converter_quality.convert_colour(compressed=True)
+        await converter_quality.cleanup()
+        
+        # Test with performance (ordered) dithering
+        monkeypatch.setenv('IMAGE_DITHER_PRIORITY', 'performance')
+        converter_perf = EBDConverter(gradient_image)
+        result_perf = await converter_perf.convert_colour(compressed=True)
+        await converter_perf.cleanup()
+        
+        # Results should be different due to different dithering methods
+        assert result_quality.raw_data != result_perf.raw_data
+
+    @pytest.mark.asyncio
     async def test_grayscale_conversion(self, test_image):
         """Test that images are correctly converted to grayscale"""
         converter = EBDConverter(test_image)
@@ -276,3 +312,90 @@ class TestEBDConverter:
         assert 'EBD="#1"' in img_tag
         
         await converter.cleanup()
+
+class TestDithering:
+    """Tests for dithering algorithms."""
+
+    def test_floyd_steinberg_color(self, gradient_image):
+        """Test Floyd-Steinberg dithering with color data."""
+        # Convert PIL image to numpy array
+        data = np.array(gradient_image, dtype=np.float32)
+        
+        # Apply dithering
+        processed_data, indices = apply_floyd_steinberg_dithering(data, find_closest_color)
+        
+        # Verify output shapes
+        assert processed_data.shape == data.shape
+        assert indices.shape == (data.shape[0], data.shape[1])
+        assert processed_data.dtype == np.float32
+        assert indices.dtype == np.uint8
+        
+        # Verify values are in valid ranges
+        assert np.all(processed_data >= 0)
+        assert np.all(processed_data <= 255)
+        assert np.all(indices < len(PALETTE_ARRAY))
+
+    def test_floyd_steinberg_grayscale(self, gradient_image):
+        """Test Floyd-Steinberg dithering with grayscale data."""
+        # Convert to grayscale
+        gray_image = gradient_image.convert('L')
+        data = np.array(gray_image, dtype=np.float32)
+        
+        # Apply dithering with 16 levels (4-bit)
+        processed_data, indices = apply_floyd_steinberg_dithering(
+            data,
+            lambda x: find_closest_gray(x, 16)
+        )
+        
+        # Verify output shapes
+        assert processed_data.shape == data.shape
+        assert indices.shape == (data.shape[0], data.shape[1])
+        assert processed_data.dtype == np.float32
+        assert indices.dtype == np.uint8
+        
+        # Verify values are in valid ranges
+        assert np.all(processed_data >= 0)
+        assert np.all(processed_data <= 255)
+        assert np.all(indices < 16)  # 4-bit grayscale has 16 levels
+
+    def test_ordered_color(self, gradient_image):
+        """Test ordered dithering with color data."""
+        # Convert PIL image to numpy array
+        data = np.array(gradient_image, dtype=np.float32)
+        
+        # Apply dithering
+        processed_data, indices = apply_ordered_dithering(data, find_closest_color)
+        
+        # Verify output shapes
+        assert processed_data.shape == data.shape
+        assert indices.shape == (data.shape[0], data.shape[1])
+        assert processed_data.dtype == np.float32
+        assert indices.dtype == np.uint8
+        
+        # Verify values are in valid ranges
+        assert np.all(processed_data >= 0)
+        assert np.all(processed_data <= 255)
+        assert np.all(indices < len(PALETTE_ARRAY))
+
+    def test_ordered_grayscale(self, gradient_image):
+        """Test ordered dithering with grayscale data."""
+        # Convert to grayscale
+        gray_image = gradient_image.convert('L')
+        data = np.array(gray_image, dtype=np.float32)
+        
+        # Apply dithering with 16 levels (4-bit)
+        processed_data, indices = apply_ordered_dithering(
+            data,
+            lambda x: find_closest_gray(x, 16)
+        )
+        
+        # Verify output shapes
+        assert processed_data.shape == data.shape
+        assert indices.shape == (data.shape[0], data.shape[1])
+        assert processed_data.dtype == np.float32
+        assert indices.dtype == np.uint8
+        
+        # Verify values are in valid ranges
+        assert np.all(processed_data >= 0)
+        assert np.all(processed_data <= 255)
+        assert np.all(indices < 16)  # 4-bit grayscale has 16 levels

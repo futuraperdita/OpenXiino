@@ -20,6 +20,14 @@ import lib.scanline as scanline
 import lib.mode9 as mode9
 from lib.xiino_palette_common import PALETTE
 from lib.logger import image_logger
+from lib.dithering import apply_dithering
+from lib.color_matching import (
+    find_closest_color,
+    find_closest_gray,
+    GRAY_PALETTE_2BIT,
+    GRAY_PALETTE_4BIT,
+    PALETTE_ARRAY
+)
 
 @dataclass
 class EBDImage:
@@ -245,8 +253,12 @@ class EBDConverter:
         # Convert to grayscale and invert
         im_gs = np.array(PIL.ImageOps.invert(self.image.convert("L")), dtype=np.uint8)
         
-        # Quantize to 2 bits (4 levels)
-        quantized = np.clip(im_gs // 64, 0, 3)
+        # Apply dithering with 4 levels (2 bits)
+        _, quantized = apply_dithering(
+            im_gs,
+            lambda x: find_closest_gray(x, 4),
+            palette_array=GRAY_PALETTE_2BIT
+        )
         
         # Pad width to multiple of 4 for byte alignment
         pad_width = (4 - (quantized.shape[1] % 4)) % 4
@@ -272,8 +284,12 @@ class EBDConverter:
         # Convert to grayscale and invert
         im_gs = np.array(PIL.ImageOps.invert(self.image.convert("L")), dtype=np.uint8)
         
-        # Quantize to 4 bits (16 levels)
-        quantized = np.clip(np.round(im_gs / 16), 0, 15).astype(np.uint8)
+        # Apply dithering with 16 levels (4 bits)
+        _, quantized = apply_dithering(
+            im_gs,
+            lambda x: find_closest_gray(x, 16),
+            palette_array=GRAY_PALETTE_4BIT
+        )
         
         # Pad width to multiple of 2 for byte alignment
         if quantized.shape[1] % 2:
@@ -295,23 +311,11 @@ class EBDConverter:
         """Convert to 8-bit color using vectorized numpy operations."""
         # Get image data as numpy array
         pixels = np.array(self.image, dtype=np.float32)
-        total_pixels = pixels.shape[0] * pixels.shape[1]
         
-        # Reshape to 2D array of pixels
-        pixels = pixels.reshape(-1, 3)
+        # Apply dithering and get indices
+        _, indices = apply_dithering(pixels, find_closest_color, palette_array=PALETTE_ARRAY)
         
-        # Convert palette to numpy array
-        palette = np.array(PALETTE, dtype=np.float32)
-        
-        # Calculate distances to all palette colors at once
-        # Use broadcasting to compute differences
-        diff = pixels[:, np.newaxis] - palette
-        distances = np.sum(diff * diff, axis=2)
-        
-        # Find closest palette color for each pixel
-        indices = np.argmin(distances, axis=1)
-        
-        return bytes(indices)
+        return bytes(indices.flatten())
 
     @staticmethod
     def _divide_chunks(l: List[Any], n: int) -> List[Any]:
