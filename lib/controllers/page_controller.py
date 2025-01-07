@@ -8,6 +8,15 @@ class PageController:
         self.compiler = Compiler()
         self.templates = {}
         self._load_templates()
+
+    def _gt(self, this, *args):
+        """Helper function for greater than comparison"""
+        if len(args) != 2:
+            return False
+        try:
+            return float(args[0]) > float(args[1])
+        except (ValueError, TypeError):
+            return False
     
     def _load_templates(self):
         """Load and compile all handlebars templates"""
@@ -19,19 +28,15 @@ class PageController:
                     template_name = os.path.splitext(template_file)[0]
                     self.templates[template_name] = self.compiler.compile(f.read())
     
-    def handle_page(self, url: str, request_info=None) -> str:
-        """Handle page requests based on about: URLs"""
-        # Strip the about: prefix if present
-        if url.startswith('about:'):
-            url = url[6:]
-        
-        if url == '' or url == 'home':
+    def handle_page(self, page: str, request_info=None) -> str:
+        """Handle page requests"""
+        if page == 'home':
             return self._render_about()
-        elif url == 'more':
+        elif page == 'more':
             return self._render_more_info()
-        elif url == 'device':
+        elif page == 'device':
             return self._render_device_info(request_info)
-        elif url == 'github':
+        elif page == 'github':
             return self._render_github()
         else:
             return self._render_not_found()
@@ -69,7 +74,8 @@ class PageController:
             'encoding': request_info.get('encoding'),
             'headers': request_info.get('headers', '')
         }
-        return self.templates['device_info'](context)
+        helpers = {'gt': self._gt}
+        return self.templates['device_info'](context, helpers=helpers)
     
     def _render_github(self) -> str:
         """Render the GitHub page"""

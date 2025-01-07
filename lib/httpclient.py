@@ -1,4 +1,5 @@
 import os
+import time
 from typing import Dict, Optional
 import aiohttp
 from lib.logger import server_logger
@@ -22,8 +23,14 @@ async def fetch(
     Fetch URL content using aiohttp.
     Returns (content, final_url, cookies)
     """
+    start_time = time.time()
     timeout_value = aiohttp.ClientTimeout(total=timeout or DEFAULT_TIMEOUT)
     headers = {"User-Agent": DEFAULT_USER_AGENT}
+    
+    server_logger.debug(f"Starting fetch for URL: {url}")
+    server_logger.debug(f"Using timeout: {timeout_value.total}s")
+    if cookies:
+        server_logger.debug(f"Using cookies: {cookies}")
     
     async with aiohttp.ClientSession(cookie_jar=None) as session:
         async with session.get(
@@ -38,8 +45,17 @@ async def fetch(
             for cookie_name, cookie_morsel in response.cookies.items():
                 response_cookies[cookie_name] = cookie_morsel.value
                 
+            content = await response.text()
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            server_logger.debug(f"Fetch completed in {duration:.2f}s")
+            server_logger.debug(f"Final URL after redirects: {response.url}")
+            server_logger.debug(f"Response status: {response.status}")
+            server_logger.debug(f"Response cookies: {response_cookies}")
+            
             return (
-                await response.text(),
+                content,
                 str(response.url),
                 response_cookies
             )
