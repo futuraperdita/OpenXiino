@@ -21,7 +21,34 @@ def test_image():
             image.putpixel((x, y), (0, 0, 0))
     return image
 
+@pytest.fixture
+def test_palette_image():
+    # Create a palette image with transparency
+    image = Image.new('P', (100, 100))
+    # Set up a simple palette with white and black
+    palette = [255, 255, 255] * 127 + [0, 0, 0] * 128  # 127 white + 128 black entries
+    image.putpalette(palette)
+    # Set transparency for index 0 (first white entry)
+    image.info['transparency'] = 0
+    # Fill with pattern - transparent (0) and black (255)
+    for x in range(100):
+        for y in range(100):
+            image.putpixel((x, y), 0 if x < 50 else 255)
+    return image
+
 class TestEBDConverter:
+
+    @pytest.mark.asyncio
+    async def test_palette_transparency(self, test_palette_image):
+        """Test that palette images with transparency are correctly matted to white"""
+        converter = EBDConverter(test_palette_image)
+        result = await converter.convert_colour(compressed=True)
+        
+        assert isinstance(result, EBDImage)
+        assert result.mode == 9  # Mode 9 is compressed color
+        assert result.width == 50  # Should be half the original width
+        assert result.height == 50  # Should be half the original height
+        assert len(result.raw_data) > 0  # Should have some data
 
     @pytest.mark.asyncio
     async def test_svg_string_conversion(self, test_image):

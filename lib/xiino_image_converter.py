@@ -49,20 +49,60 @@ class EBDConverter:
     Convert from a PIL image to any of the modes known to be supported by Xiino.
     """
 
+    def __extract_svg_dimensions(self, svg_content: str) -> tuple[int, int]:
+        """Extract width and height from SVG content"""
+        import re
+        
+        # Try to extract from width/height attributes with units
+        width_match = re.search(r'width="(\d+(?:\.\d+)?)\s*(?:px|pt|mm|cm|in|%)?', svg_content)
+        height_match = re.search(r'height="(\d+(?:\.\d+)?)\s*(?:px|pt|mm|cm|in|%)?', svg_content)
+        
+        if width_match and height_match:
+            width = float(width_match.group(1))
+            height = float(height_match.group(1))
+            # If dimensions are percentages, try to get actual size from viewBox
+            if '%' in width_match.group(0) or '%' in height_match.group(0):
+                viewbox_match = re.search(r'viewBox="[^"]*?\s+[^"]*?\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"', svg_content)
+                if viewbox_match:
+                    return int(float(viewbox_match.group(1))), int(float(viewbox_match.group(2)))
+            return int(width), int(height)
+            
+        # Try to extract from viewBox
+        viewbox_match = re.search(r'viewBox="[^"]*?\s+[^"]*?\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)"', svg_content)
+        if viewbox_match:
+            return int(float(viewbox_match.group(1))), int(float(viewbox_match.group(2)))
+            
+        # Default to device width if no dimensions found
+        return 306, 306
+
     async def __convert_svg(self, svg_content: str, is_file: bool = False) -> PIL.Image.Image:
-        """Convert SVG to PNG with security checks"""
+        """Convert SVG to PNG with security checks and proper scaling"""
         if len(svg_content.encode('utf-8')) > MAX_SVG_SIZE:
             raise ValueError("SVG content exceeds maximum allowed size")
             
         try:
+            # Extract original dimensions
+            orig_width, orig_height = self.__extract_svg_dimensions(svg_content)
+            
+            # Calculate target dimensions maintaining aspect ratio
+            # For very small SVGs (< 100px), use original size
+            if orig_width < 100 and orig_height < 100:
+                target_width = orig_width
+                target_height = orig_height
+            else:
+                target_width = 153 if orig_width > 306 else math.ceil(orig_width / 2)
+                scale_factor = target_width / orig_width
+                target_height = math.ceil(orig_height * scale_factor)
+            
             async with asyncio.timeout(SVG_PROCESSING_TIMEOUT):
                 # Run in executor to prevent blocking
                 png_data = await asyncio.to_thread(
                     cairosvg.svg2png,
                     url=svg_content if is_file else None,
                     bytestring=svg_content.encode('utf-8') if not is_file else None,
-                    parent_width=306,  # Limit initial size
-                    parent_height=306
+                    output_width=target_width,
+                    output_height=target_height,
+                    scale=1.0  # Use explicit dimensions instead of scaling
                 )
                 return PIL.Image.open(io.BytesIO(png_data))
         except asyncio.TimeoutError:
@@ -114,8 +154,11 @@ class EBDConverter:
             else:
                 image = self._image
 
-            # Apply scaling logic
-            if not self._override_scale_logic:
+            # Apply scaling logic only for non-SVG images
+            if not self._override_scale_logic and not (
+                isinstance(self._image, str) and 
+                (self._image.lower().endswith('.svg') or '<svg' in self._image[:1000].lower())
+            ):
                 if image.width > 306:
                     new_width = 153
                     new_height = math.ceil((image.height / image.width) * 153)
@@ -123,10 +166,14 @@ class EBDConverter:
                     new_width = math.ceil(image.width / 2)
                     new_height = math.ceil(image.height / 2)
 
-                image = image.resize((new_width, new_height))
+                image = image.resize((new_width, new_height), PIL.Image.Resampling.LANCZOS)
 
             # Handle transparency
             try:
+                # Convert palette images with transparency to RGBA first
+                if image.mode == "P" and image.info.get("transparency") is not None:
+                    image = image.convert("RGBA")
+                
                 if image.mode == "RGBA":
                     background = PIL.Image.new("RGBA", image.size, (255, 255, 255))
                     self.image = PIL.Image.alpha_composite(background, image).convert("RGB")

@@ -18,6 +18,41 @@ def mock_aiohttp():
         yield m
 
 @pytest.mark.asyncio
+async def test_svg_from_url(parser, mock_aiohttp, base_url):
+    """Test that SVG content in BytesIO is correctly handled"""
+    # Create a simple test SVG
+    svg_content = '''<?xml version="1.0" encoding="UTF-8"?>
+    <svg width="100" height="100" xmlns="http://www.w3.org/2000/svg">
+        <rect width="100" height="100" fill="black"/>
+        <circle cx="50" cy="50" r="40" fill="white"/>
+    </svg>'''
+    
+    # Mock the response for SVG request
+    mock_aiohttp.get(
+        f"{base_url}/test.svg",
+        body=svg_content.encode('utf-8'),
+        status=200,
+        content_type="image/svg+xml"
+    )
+
+    test_html = f"""
+    <html>
+        <body>
+            <img src="/test.svg" alt="Test SVG">
+        </body>
+    </html>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    # Verify SVG conversion
+    assert "<IMG" in result  # IMG tag exists
+    assert "EBD=" in result  # Has EBD reference
+    assert "<EBDIMAGE" in result  # EBDIMAGE tag exists
+    assert "MODE=" in result  # Has mode specified
+
+@pytest.mark.asyncio
 async def test_data_url_image(parser):
     """Test that data: URL images are correctly handled"""
     # A 10x10 black pixel PNG in base64

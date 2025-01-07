@@ -304,24 +304,44 @@ class XiinoHTMLParser(HTMLParser):
                     image_buffer = BytesIO(image_data)
 
                 try:
-                    image = Image.open(image_buffer)
-                    
-                    # Validate image dimensions
-                    if image.width > MAX_IMAGE_DIMENSIONS[0] or image.height > MAX_IMAGE_DIMENSIONS[1]:
-                        html_logger.warning(f"Image dimensions too large: {url}")
-                        self.__parsed_data_buffer[buffer_index] = "<p>[Image dimensions too large]</p>\n"
-                        image_buffer.close()
-                        return
+                    # Check if content is SVG
+                    is_svg = False
+                    if isinstance(image_buffer, str):  # Already SVG content from data URL
+                        is_svg = True
+                        svg_content = image_buffer
+                    else:
+                        # Try to detect SVG from content
+                        peek = image_buffer.read(1000).decode('utf-8', errors='ignore')
+                        image_buffer.seek(0)
+                        is_svg = '<svg' in peek.lower()
                         
-                    # pre-filter images
-                    if (image.width / 2 < MIN_IMAGE_DIMENSIONS[0] or 
-                        image.height / 2 < MIN_IMAGE_DIMENSIONS[1]):
-                        html_logger.warning(f"Image too small at {url}")
-                        self.__parsed_data_buffer[buffer_index] = "<p>[Small image]</p>\n"
-                        return
+                    if is_svg:
+                        # For SVG, pass content directly to EBDConverter
+                        if not isinstance(image_buffer, str):
+                            svg_content = image_buffer.read().decode('utf-8')
+                            image_buffer.seek(0)
+                        convert_start = time.time()
+                        ebd_converter = EBDConverter(svg_content)
+                    else:
+                        # For non-SVG images, use PIL
+                        image = Image.open(image_buffer)
+                        
+                        # Validate image dimensions
+                        if image.width > MAX_IMAGE_DIMENSIONS[0] or image.height > MAX_IMAGE_DIMENSIONS[1]:
+                            html_logger.warning(f"Image dimensions too large: {url}")
+                            self.__parsed_data_buffer[buffer_index] = "<p>[Image dimensions too large]</p>\n"
+                            image_buffer.close()
+                            return
+                            
+                        # pre-filter images
+                        if (image.width / 2 < MIN_IMAGE_DIMENSIONS[0] or 
+                            image.height / 2 < MIN_IMAGE_DIMENSIONS[1]):
+                            html_logger.warning(f"Image too small at {url}")
+                            self.__parsed_data_buffer[buffer_index] = "<p>[Small image]</p>\n"
+                            return
 
-                    convert_start = time.time()
-                    ebd_converter = EBDConverter(image)
+                        convert_start = time.time()
+                        ebd_converter = EBDConverter(image)
                     await ebd_converter._ensure_initialized()
 
                     html_logger.debug("Starting EBD conversion")
