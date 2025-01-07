@@ -1,7 +1,9 @@
 import os
 import time
 from typing import Dict, Optional, Tuple, Union
+from urllib.parse import urlparse
 import aiohttp
+from aiohttp_socks import ProxyConnector
 from lib.logger import server_logger
 from dotenv import load_dotenv
 
@@ -15,8 +17,17 @@ DEFAULT_USER_AGENT = os.getenv(
 )
 MAX_PAGE_SIZE = int(os.getenv('MAX_PAGE_SIZE', 100)) * 1024  # Convert KB to bytes
 
-# Configure proxy if available
-PROXY = os.getenv('SOCKS5_PROXY')
+# Configure SOCKS5 proxy if available
+PROXY_URL = os.getenv('SOCKS5_PROXY')
+if PROXY_URL:
+    proxy_parts = urlparse(PROXY_URL)
+    if not proxy_parts.port:
+        raise ValueError("SOCKS5 proxy URL must include port number")
+    PROXY_HOST = proxy_parts.hostname
+    PROXY_PORT = proxy_parts.port
+else:
+    PROXY_HOST = None
+    PROXY_PORT = None
 
 class ContentTooLargeError(Exception):
     """Raised when content exceeds maximum size limit"""
@@ -41,12 +52,13 @@ async def fetch(
     if cookies:
         server_logger.debug(f"Using cookies: {cookies}")
     
-    async with aiohttp.ClientSession(cookie_jar=None) as session:
+    # Create connector with SOCKS5 proxy if configured
+    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
+    async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
         async with session.get(
             url,
             headers=headers,
             cookies=cookies,
-            proxy=PROXY,
             timeout=timeout_value,
             allow_redirects=True,  # Explicitly enable redirects (including HTTP->HTTPS)
             max_redirects=10
@@ -114,13 +126,14 @@ async def post(
     if cookies:
         server_logger.debug(f"Using cookies: {cookies}")
     
-    async with aiohttp.ClientSession(cookie_jar=None) as session:
+    # Create connector with SOCKS5 proxy if configured
+    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
+    async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
         async with session.post(
             url,
             headers=headers,
             cookies=cookies,
             data=data,
-            proxy=PROXY,
             timeout=timeout_value,
             allow_redirects=True,
             max_redirects=10
@@ -182,12 +195,13 @@ async def fetch_binary(
     if cookies:
         server_logger.debug(f"Using cookies: {cookies}")
     
-    async with aiohttp.ClientSession(cookie_jar=None) as session:
+    # Create connector with SOCKS5 proxy if configured
+    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
+    async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
         async with session.get(
             url,
             headers=headers,
             cookies=cookies,
-            proxy=PROXY,
             timeout=timeout_value,
             allow_redirects=True,  # Explicitly enable redirects (including HTTP->HTTPS)
             max_redirects=10
