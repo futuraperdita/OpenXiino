@@ -1,5 +1,10 @@
 from pybars import Compiler
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+MAX_PAGE_SIZE = int(os.getenv('MAX_PAGE_SIZE', 100))  # Default to 100KB if not set
 
 class PageController:
     """Controller for handling page routes and rendering templates"""
@@ -28,18 +33,45 @@ class PageController:
                     template_name = os.path.splitext(template_file)[0]
                     self.templates[template_name] = self.compiler.compile(f.read())
     
+    def _check_content_size(self, content: str) -> bool:
+        """Check if content size exceeds the maximum allowed size
+        
+        Args:
+            content: The rendered page content to check
+            
+        Returns:
+            bool: True if content is within size limit, False otherwise
+        """
+        content_size_kb = len(content.encode('utf-8')) / 1024
+        return content_size_kb <= MAX_PAGE_SIZE
+    
+    def _render_page_too_large(self) -> str:
+        """Render the page too large error page"""
+        context = {
+            'title': 'Page Too Large',
+            'max_size': MAX_PAGE_SIZE
+        }
+        return self.templates['page_too_large'](context)
+
     def handle_page(self, page: str, request_info=None) -> str:
         """Handle page requests"""
+        # First render the requested page
+        content = None
+
         if page == 'home':
-            return self._render_about()
+            content = self._render_about()
         elif page == 'more':
-            return self._render_more_info()
+            content = self._render_more_info()
         elif page == 'device':
-            return self._render_device_info(request_info)
+            content = self._render_device_info(request_info)
         elif page == 'github':
-            return self._render_github()
+            content = self._render_github()
+        elif page == 'error_toolarge':
+            content = self._render_page_too_large()
         else:
-            return self._render_not_found()
+            content = self._render_not_found()
+            
+        return content
     
     def _render_about(self) -> str:
         """Render the about page"""

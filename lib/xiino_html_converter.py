@@ -6,6 +6,13 @@ import base64
 import re
 import asyncio
 import time
+import os
+from dotenv import load_dotenv
+from lib.httpclient import fetch_binary, ContentTooLargeError
+from lib.logger import html_logger
+
+# Load environment variables
+load_dotenv()
 
 # Security constants
 MAX_IMAGE_SIZE = 1024 * 1024 * 5  # 5MB max image size
@@ -23,8 +30,6 @@ ALLOWED_IMAGE_MIME_TYPES = {
 MIN_IMAGE_DIMENSIONS = (1, 1)
 
 from lib.xiino_image_converter import EBDConverter
-from lib.httpclient import fetch_binary
-from lib.logger import html_logger
 
 supported_tags = [
     "A", "ADDRESS", "AREA", "B", "BASE", "BASEFONT", "BLINK", "BLOCKQUOTE",
@@ -34,7 +39,7 @@ supported_tags = [
     "ISINDEX", "KBD", "LI", "MAP", "META", "MULTICOL", "NOBR", "NOFRAMES",
     "OL", "OPTION", "P", "PLAINTEXT", "PRE", "S", "SELECT", "SMALL",
     "STRIKE", "STRONG", "STYLE", "SUB", "SUP", "TABLE", "TITLE",
-    "TD", "TH", "TR", "TT", "U", "UL", "VAR", "XMP",
+    "TD", "TH", "TR", "TT", "U", "UL", "VAR", "XMP", "HEAD"
 ]
 
 # Define allowed attributes and their values per tag based on Xiino spec
@@ -111,6 +116,8 @@ class XiinoHTMLParser(HTMLParser):
         self.grayscale_depth = grayscale_depth
         self.image_tasks = []  # Track image processing tasks
         self.next_ebd_ref = 1  # Counter for EBD references
+        self.total_size = 0  # Track total page size in bytes
+        self.max_size = int(os.getenv('MAX_PAGE_SIZE', 100)) * 1024  # Convert KB to bytes
         super().__init__(convert_charrefs=convert_charrefs)
 
     def _filter_attributes(self, tag: str, attrs: list) -> list:
@@ -178,6 +185,13 @@ class XiinoHTMLParser(HTMLParser):
                         f'{x[0].upper()}="{x[1]}"' for x in filtered_attrs
                     )
                 tag_str += ">\n"
+                
+                # Check size with new tag
+                new_size = len(tag_str.encode('utf-8'))
+                if self.total_size + new_size > self.max_size:
+                    html_logger.warning("Total page size would exceed limit")
+                    raise ContentTooLargeError()
+                self.total_size += new_size
                 self.__parsed_data_buffer.append(tag_str)
         else:
             self.parsing_supported_tag = False
@@ -186,11 +200,23 @@ class XiinoHTMLParser(HTMLParser):
         if self.parsing_supported_tag:
             content = data.strip()
             if len(content) > 0:
-                self.__parsed_data_buffer.append(content + "\n")
+                content_with_newline = content + "\n"
+                new_size = len(content_with_newline.encode('utf-8'))
+                if self.total_size + new_size > self.max_size:
+                    html_logger.warning("Total page size would exceed limit")
+                    raise ContentTooLargeError()
+                self.total_size += new_size
+                self.__parsed_data_buffer.append(content_with_newline)
 
     def handle_endtag(self, tag):
         if tag.upper() in supported_tags:
-            self.__parsed_data_buffer.append(f"</{tag.upper()}>\n")
+            end_tag = f"</{tag.upper()}>\n"
+            new_size = len(end_tag.encode('utf-8'))
+            if self.total_size + new_size > self.max_size:
+                html_logger.warning("Total page size would exceed limit")
+                raise ContentTooLargeError()
+            self.total_size += new_size
+            self.__parsed_data_buffer.append(end_tag)
 
     def validate_image_url(self, url: str) -> bool:
         """Validate image URL for security"""
@@ -289,7 +315,7 @@ class XiinoHTMLParser(HTMLParser):
                     if (image.width / 2 < MIN_IMAGE_DIMENSIONS[0] or 
                         image.height / 2 < MIN_IMAGE_DIMENSIONS[1]):
                         html_logger.warning(f"Image too small at {url}")
-                        self.__parsed_data_buffer[buffer_index] = "<p>[Image too small]</p>\n"
+                        self.__parsed_data_buffer[buffer_index] = "<p>[Small image]</p>\n"
                         return
 
                     convert_start = time.time()
@@ -304,11 +330,24 @@ class XiinoHTMLParser(HTMLParser):
 
                     ebd_ref = self.next_ebd_ref
                     self.next_ebd_ref += 1
-                    # Place IMG and EBDIMAGE tags at the correct position
-                    self.__parsed_data_buffer[buffer_index] = (
-                        image_data.generate_img_tag(name=f"#{ebd_ref}") + "\n" +
-                        image_data.generate_ebdimage_tag(name=ebd_ref) + "\n"
-                    )
+                    
+                    # Generate image tags and check total size
+                    img_tag = image_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
+                    ebd_tag = image_data.generate_ebdimage_tag(name=ebd_ref) + "\n"
+                    
+                    # Calculate size of HTML tags and EBD data
+                    new_size = len(img_tag.encode('utf-8')) + len(ebd_tag.encode('utf-8')) + len(image_data.raw_data)
+                    
+                    # Check if adding this image would exceed size limit
+                    if self.total_size + new_size > self.max_size:
+                        html_logger.warning(f"Total page size would exceed limit with EBD image: {url}")
+                        image_buffer.close()
+                        # Don't set buffer - let the error propagate up
+                        raise ContentTooLargeError()
+                    
+                    # Update total size and buffer
+                    self.total_size += new_size
+                    self.__parsed_data_buffer[buffer_index] = img_tag + ebd_tag
                     image_buffer.close()
                     
                     # Increment image count
@@ -329,6 +368,8 @@ class XiinoHTMLParser(HTMLParser):
         except asyncio.TimeoutError:
             html_logger.warning(f"Image processing timeout: {url}")
             self.__parsed_data_buffer[buffer_index] = "<p>[Image processing timeout]</p>\n"
+        except ContentTooLargeError:
+            raise  # Re-raise to propagate up
         except Exception as e:
             html_logger.error(f"Error processing image {url}: {str(e)}")
             self.__parsed_data_buffer[buffer_index] = "<p>[Image processing error]</p>\n"
@@ -338,17 +379,29 @@ class XiinoHTMLParser(HTMLParser):
         start_time = time.time()
         html_logger.debug("Starting HTML parsing")
         
-        self.feed(data)
-        parse_duration = time.time() - start_time
-        html_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
-        
-        # Wait for all image processing to complete
-        if self.image_tasks:
-            html_logger.debug(f"Waiting for {len(self.image_tasks)} images to process")
-            await asyncio.gather(*self.image_tasks)
-        
-        total_duration = time.time() - start_time
-        html_logger.debug(f"Total feed_async processing completed in {total_duration:.2f}s")
+        try:
+            self.feed(data)
+            parse_duration = time.time() - start_time
+            html_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
+            
+            # Wait for all image processing to complete
+            if self.image_tasks:
+                html_logger.debug(f"Waiting for {len(self.image_tasks)} images to process")
+                try:
+                    await asyncio.gather(*self.image_tasks)
+                except ContentTooLargeError:
+                    # Clear any partial processing
+                    self.__parsed_data_buffer = []
+                    self.image_tasks = []
+                    raise
+            
+            total_duration = time.time() - start_time
+            html_logger.debug(f"Total feed_async processing completed in {total_duration:.2f}s")
+        except ContentTooLargeError:
+            # Clear any partial processing
+            self.__parsed_data_buffer = []
+            self.image_tasks = []
+            raise
 
     def get_parsed_data(self):
         """Get the parsed data from the buffer, then clear it."""

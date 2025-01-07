@@ -11,7 +11,7 @@ from lib.xiino_html_converter import XiinoHTMLParser
 from lib.controllers.page_controller import PageController
 from lib.logger import setup_logging, server_logger
 from lib.cookie_manager import CookieManager
-from lib.httpclient import fetch
+from lib.httpclient import fetch, ContentTooLargeError
 
 # Load environment variables and setup logging
 load_dotenv()
@@ -165,31 +165,47 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                 try:
                     fetch_start = time.time()
                     server_logger.info("Fetching external URL: %s" % url)
-                    content, response_url, response_cookies = await self.fetch_url(url)
-                    fetch_duration = time.time() - fetch_start
-                    server_logger.debug(f"URL fetch completed in {fetch_duration:.2f}s")
-                    
-                    # Add Set-Cookie headers to response
-                    for cookie_header in CookieManager.prepare_response_cookies(
-                        response_cookies,
-                        response_url
-                    ):
-                        self.send_header("Set-Cookie", cookie_header)
+                    try:
+                        content, response_url, response_cookies = await self.fetch_url(url)
+                        fetch_duration = time.time() - fetch_start
+                        server_logger.debug(f"URL fetch completed in {fetch_duration:.2f}s")
+                        
+                        # Add Set-Cookie headers to response
+                        for cookie_header in CookieManager.prepare_response_cookies(
+                            response_cookies,
+                            response_url
+                        ):
+                            self.send_header("Set-Cookie", cookie_header)
+                    except ContentTooLargeError:
+                        server_logger.warning(f"Content too large for URL: {url}")
+                        page_content = self.page_controller.handle_page("page_too_large")
+                        self.wfile.write(bytes([0x00] * 12))
+                        self.wfile.write(bytes([0x0D, 0x0A] * 2))
+                        self.wfile.write(page_content.encode("latin-1", errors="replace"))
+                        return
                     
                     # Check if grayscale is requested
                     gscale_depth = self.GSCALE_DEPTH_REGEX.search(self.requestline)
                     grayscale_depth = int(gscale_depth.group(1)) if gscale_depth else None
                     
                     parse_start = time.time()
-                    parser = XiinoHTMLParser(
-                        base_url=response_url,
-                        grayscale_depth=grayscale_depth
-                    )
-                    server_logger.debug(f"Processing URL: {response_url}")
-                    await parser.feed_async(content)
-                    clean_html = parser.get_parsed_data()
-                    parse_duration = time.time() - parse_start
-                    server_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
+                    try:
+                        parser = XiinoHTMLParser(
+                            base_url=response_url,
+                            grayscale_depth=grayscale_depth
+                        )
+                        server_logger.debug(f"Processing URL: {response_url}")
+                        await parser.feed_async(content)
+                        clean_html = parser.get_parsed_data()
+                        parse_duration = time.time() - parse_start
+                        server_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
+                    except ContentTooLargeError:
+                        server_logger.warning(f"Content too large for URL: {url}")
+                        page_content = self.page_controller.handle_page("error_toolarge")
+                        self.wfile.write(bytes([0x00] * 12))
+                        self.wfile.write(bytes([0x0D, 0x0A] * 2))
+                        self.wfile.write(page_content.encode("latin-1", errors="replace"))
+                        return
                     
                     write_start = time.time()
                     self.wfile.write(bytes([0x00] * 12))
