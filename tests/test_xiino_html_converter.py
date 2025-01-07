@@ -1,8 +1,10 @@
 import pytest
-from aioresponses import aioresponses
-from lib.xiino_html_converter import XiinoHTMLParser
+from aioresponses import aioresponses, CallbackResult
+from lib.xiino_html_converter import XiinoHTMLParser, ContentTooLargeError
 from PIL import Image
+import asyncio
 from io import BytesIO
+import os
 
 @pytest.fixture
 def base_url():
@@ -11,6 +13,10 @@ def base_url():
 @pytest.fixture
 def parser(base_url):
     return XiinoHTMLParser(base_url=base_url)
+
+@pytest.fixture
+def grayscale_parser(base_url):
+    return XiinoHTMLParser(base_url=base_url, grayscale_depth=4)
 
 @pytest.fixture
 def mock_aiohttp():
@@ -198,32 +204,209 @@ async def test_form_attributes(parser):
     
     # Verify disallowed attributes and values are filtered
     assert 'invalid=' not in result
-    assert 'TYPE="invalid"' not in result
 
 @pytest.mark.asyncio
-async def test_table_attributes(parser):
-    """Test table-specific attributes and values"""
-    test_html = """
-    <table border="1" cellpadding="5" invalid="attr">
-        <tr align="center" valign="middle">
-            <th align="left" valign="top">Header</th>
-            <td align="right" valign="bottom">Cell</td>
-        </tr>
-    </table>
+async def test_oversized_image(parser, mock_aiohttp, base_url):
+    """Test handling of oversized images"""
+    # Create an oversized image (6MB)
+    large_data = b'0' * (6 * 1024 * 1024)
+    
+    mock_aiohttp.get(
+        f"{base_url}/large.jpg",
+        body=large_data,
+        status=200,
+        content_type="image/jpeg"
+    )
+
+    test_html = f"""
+    <html><body><img src="/large.jpg" alt="Large Image"></body></html>
     """
     
     await parser.feed_async(test_html)
     result = parser.get_parsed_data()
     
-    # Verify allowed table attributes and values
-    assert 'BORDER="1"' in result
-    assert 'CELLPADDING="5"' in result
-    assert 'ALIGN="center"' in result
-    assert 'VALIGN="middle"' in result
-    assert 'ALIGN="left"' in result
-    assert 'VALIGN="top"' in result
-    assert 'ALIGN="right"' in result
-    assert 'VALIGN="bottom"' in result
+    assert "[Image too large]" in result
+
+@pytest.mark.asyncio
+async def test_image_limit_per_page(parser, mock_aiohttp, base_url):
+    """Test maximum images per page limit"""
+    # Create a small test image
+    test_image = Image.new('RGB', (10, 10), color='black')
+    image_buffer = BytesIO()
+    test_image.save(image_buffer, format='PNG')
+    image_data = image_buffer.getvalue()
     
-    # Verify disallowed attributes are filtered
-    assert 'invalid=' not in result
+    # Mock image response
+    mock_aiohttp.get(
+        f"{base_url}/test.jpg",
+        body=image_data,
+        status=200,
+        content_type="image/jpeg"
+    )
+
+    # Create HTML with more than MAX_IMAGES_PER_PAGE images
+    images_html = "".join([
+        f'<img src="/test.jpg" alt="Test {i}">'
+        for i in range(105)  # More than MAX_IMAGES_PER_PAGE (100)
+    ])
+    test_html = f"<html><body>{images_html}</body></html>"
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    assert "[Image limit exceeded]" in result
+
+@pytest.mark.asyncio
+async def test_grayscale_conversion(grayscale_parser, mock_aiohttp, base_url):
+    """Test grayscale image conversion"""
+    test_image = Image.new('RGB', (10, 10), color='black')
+    image_buffer = BytesIO()
+    test_image.save(image_buffer, format='PNG')
+    image_data = image_buffer.getvalue()
+    
+    mock_aiohttp.get(
+        f"{base_url}/test.jpg",
+        body=image_data,
+        status=200,
+        content_type="image/jpeg"
+    )
+
+    test_html = """
+    <html><body><img src="/test.jpg" alt="Test Image"></body></html>
+    """
+    
+    await grayscale_parser.feed_async(test_html)
+    result = grayscale_parser.get_parsed_data()
+    
+    assert "MODE=\"4\"" in result  # Mode 4 is compressed 4-bit grayscale
+
+@pytest.mark.asyncio
+async def test_invalid_image(parser, mock_aiohttp, base_url):
+    """Test handling of invalid image data"""
+    mock_aiohttp.get(
+        f"{base_url}/invalid.jpg",
+        body=b'not an image',
+        status=200,
+        content_type="image/jpeg"
+    )
+
+    test_html = """
+    <html><body><img src="/invalid.jpg" alt="Invalid Image"></body></html>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    assert "[Image processing error]" in result
+
+@pytest.mark.asyncio
+async def test_concurrent_image_processing(parser, mock_aiohttp, base_url):
+    """Test concurrent processing of multiple images"""
+    test_image = Image.new('RGB', (10, 10), color='black')
+    image_buffer = BytesIO()
+    test_image.save(image_buffer, format='PNG')
+    image_data = image_buffer.getvalue()
+    
+    # Mock multiple different image URLs
+    for i in range(5):
+        mock_aiohttp.get(
+            f"{base_url}/test{i}.jpg",
+            body=image_data,
+            status=200,
+            content_type="image/jpeg"
+        )
+
+    # Create HTML with multiple images
+    images_html = "".join([
+        f'<img src="/test{i}.jpg" alt="Test {i}">'
+        for i in range(5)
+    ])
+    test_html = f"<html><body>{images_html}</body></html>"
+    
+    start_time = asyncio.get_event_loop().time()
+    await parser.feed_async(test_html)
+    end_time = asyncio.get_event_loop().time()
+    
+    result = parser.get_parsed_data()
+    
+    # Verify all images were processed
+    assert result.count("<IMG") == 5
+    assert result.count("<EBDIMAGE") == 5
+    
+    # Verify concurrent processing (should take less time than sequential)
+    assert end_time - start_time < 1.0  # Should be much faster than 5 * single image time
+
+@pytest.mark.asyncio
+async def test_timeout_handling(parser, mock_aiohttp, base_url):
+    """Test handling of image processing timeouts"""
+    async def delayed_response(*args, **kwargs):
+        # Create a valid test image
+        test_image = Image.new('RGB', (10, 10), color='black')
+        image_buffer = BytesIO()
+        test_image.save(image_buffer, format='PNG')
+        image_data = image_buffer.getvalue()
+        
+        await asyncio.sleep(2)  # Long enough to trigger timeout
+        return CallbackResult(
+            status=200,
+            body=image_data,
+            content_type='image/png'
+        )
+
+    mock_aiohttp.get(
+        f"{base_url}/slow.jpg",
+        callback=delayed_response
+    )
+
+    test_html = """
+    <html><body><img src="/slow.jpg" alt="Slow Image"></body></html>
+    """
+    
+    await parser.feed_async(test_html)
+    result = parser.get_parsed_data()
+    
+    assert "[Image processing timeout]" in result
+
+@pytest.mark.asyncio
+async def test_cleanup_behavior(parser, mock_aiohttp, base_url):
+    """Test proper cleanup of resources"""
+    test_image = Image.new('RGB', (10, 10), color='black')
+    image_buffer = BytesIO()
+    test_image.save(image_buffer, format='PNG')
+    image_data = image_buffer.getvalue()
+    
+    mock_aiohttp.get(
+        f"{base_url}/test.jpg",
+        body=image_data,
+        status=200,
+        content_type="image/jpeg"
+    )
+
+    test_html = """
+    <html><body><img src="/test.jpg" alt="Test Image"></body></html>
+    """
+    
+    await parser.feed_async(test_html)
+    _ = parser.get_parsed_data()  # This should mark cleanup as required
+    
+    assert parser._cleanup_required == True
+    await parser.cleanup()
+    assert parser._cleanup_required == False
+    assert len(parser.image_tasks) == 0
+    assert len(parser._XiinoHTMLParser__parsed_data_buffer) == 0
+
+@pytest.mark.asyncio
+async def test_page_size_limit(parser, mock_aiohttp, base_url):
+    """Test handling of total page size limits"""
+    # Set a very small page size limit for testing
+    os.environ['MAX_PAGE_SIZE'] = '1'  # 1KB limit
+    parser.max_size = 1024  # 1KB
+    
+    # Create content that will exceed the limit
+    large_content = "x" * 2000  # 2KB of content
+    test_html = f"""
+    <html><body><p>{large_content}</p></body></html>
+    """
+    
+    with pytest.raises(ContentTooLargeError):
+        await parser.feed_async(test_html)

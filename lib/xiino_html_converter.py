@@ -1,3 +1,4 @@
+"""Classes for converting HTML to Xiino format."""
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlparse
 from PIL import Image, UnidentifiedImageError
@@ -18,10 +19,11 @@ from lib.xiino_image_converter import EBDConverter
 load_dotenv()
 
 # Security constants
+# TODO: abstract all to .env
 MAX_IMAGE_SIZE = 1024 * 1024 * 5  # 5MB max image size
 MAX_IMAGE_DIMENSIONS = (2048, 2048)  # Max width/height
 MAX_IMAGES_PER_PAGE = 100  # Maximum number of images per page
-IMAGE_PROCESSING_TIMEOUT = 30  # 30 second timeout for image processing
+IMAGE_PROCESSING_TIMEOUT = int(os.getenv('IMAGE_PROCESSING_TIMEOUT', '30'))  # Timeout in seconds for image processing
 MAX_DATA_URL_SIZE = 1024 * 1024  # 1MB max for data URLs
 ALLOWED_IMAGE_MIME_TYPES = {
     'image/jpeg', 'image/png', 'image/gif', 
@@ -189,6 +191,11 @@ class XiinoHTMLParser(HTMLParser):
         """Handle IMG tag processing"""
         source_url = next((attr[1] for attr in attrs if attr[0].lower() == "src"), None)
         if source_url:
+            if self.image_count >= MAX_IMAGES_PER_PAGE:
+                html_logger.warning("Too many images on page")
+                self.__parsed_data_buffer.append("<p>[Image limit exceeded]</p>\n")
+                return
+
             placeholder_index = len(self.__parsed_data_buffer)
             self.__parsed_data_buffer.append("")
             
@@ -196,6 +203,7 @@ class XiinoHTMLParser(HTMLParser):
             task = asyncio.create_task(self.parse_image(source_url, placeholder_index))
             self.image_tasks.append(ImageTask(source_url, placeholder_index, task))
             self._cleanup_required = True
+            self.image_count += 1
         else:
             html_logger.warning(f"IMG with no SRC at {self.base_url}")
             self.__parsed_data_buffer.append("<p>[Missing image source]</p>\n")
@@ -292,17 +300,12 @@ class XiinoHTMLParser(HTMLParser):
         start_time = time.time()
         html_logger.debug(f"Starting image processing for: {url}")
         
-        try:
-            if self.image_count >= MAX_IMAGES_PER_PAGE:
-                html_logger.warning(f"Too many images on page: {url}")
-                self.__parsed_data_buffer[buffer_index] = "<p>[Image limit exceeded]</p>\n"
-                return
-                
-            if not self.validate_image_url(url):
-                html_logger.warning(f"Invalid image URL: {url}")
-                self.__parsed_data_buffer[buffer_index] = "<p>[Invalid image URL]</p>\n"
-                return
+        if not self.validate_image_url(url):
+            html_logger.warning(f"Invalid image URL: {url}")
+            self.__parsed_data_buffer[buffer_index] = "<p>[Invalid image URL]</p>\n"
+            return
 
+        try:
             async with asyncio.timeout(IMAGE_PROCESSING_TIMEOUT):
                 await self._process_image(url, buffer_index, start_time)
                 
@@ -310,7 +313,8 @@ class XiinoHTMLParser(HTMLParser):
             html_logger.warning(f"Image processing timeout: {url}")
             self.__parsed_data_buffer[buffer_index] = "<p>[Image processing timeout]</p>\n"
         except ContentTooLargeError:
-            raise
+            html_logger.warning(f"Content too large: {url}")
+            self.__parsed_data_buffer[buffer_index] = "<p>[Image too large]</p>\n"
         except Exception as e:
             html_logger.error(f"Error processing image {url}: {str(e)}")
             self.__parsed_data_buffer[buffer_index] = "<p>[Image processing error]</p>\n"
@@ -412,7 +416,6 @@ class XiinoHTMLParser(HTMLParser):
         
         self.total_size += new_size
         self.__parsed_data_buffer[buffer_index] = img_tag + ebd_tag
-        self.image_count += 1
         
         html_logger.debug(
             f"Image processing completed in {time.time() - start_time:.2f}s"
