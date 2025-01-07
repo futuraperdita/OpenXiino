@@ -242,7 +242,8 @@ class EBDConverter:
 
     def _convert_mode1(self) -> bytes:
         """Convert to mode1 (one-bit, scanline compression)."""
-        return self._convert_mode0()  # TODO: Implement scanline compression
+        width_bytes = math.ceil(self.image.width / 2)
+        return scanline.compress_data_with_scanline(self._convert_mode0(), width_bytes)
 
     def _convert_mode2(self) -> bytes:
         """Convert to uncompressed two-bit grey."""
