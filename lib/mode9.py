@@ -1,5 +1,6 @@
 "Compress a PIL image using Xiino mode 9."
 import PIL.Image
+import numpy as np
 from lib.ebd_control_codes import CONTROL_CODES
 from lib.xiino_palette_common import PALETTE
 
@@ -30,30 +31,54 @@ client compatibility:
      * All while using only patterns the client can decompress
 """
 
-def _rgb_to_lab(r, g, b):
+def _rgb_to_lab_vectorized(rgb):
     """
-    Convert RGB to LAB color space for better perceptual matching.
-    RGB -> Normalized RGB -> XYZ -> LAB using D65 white point.
+    Convert RGB to LAB color space using vectorized NumPy operations.
+    Takes either a single RGB tuple or a numpy array of RGB values.
     """
-    r, g, b = r/255.0, g/255.0, b/255.0
+    rgb = np.asarray(rgb, dtype=np.float32)
+    if rgb.ndim == 1:
+        rgb = rgb.reshape(1, -1)
     
-    def f(t):
-        return t**(1/3) if t > 0.008856 else 7.787*t + 16/116
+    # Normalize RGB values
+    rgb = rgb / 255.0
     
-    x = f(0.4124564*r + 0.3575761*g + 0.1804375*b)
-    y = f(0.2126729*r + 0.7151522*g + 0.0721750*b)
-    z = f(0.0193339*r + 0.1191920*g + 0.9503041*b)
+    # RGB to XYZ matrix (D65 illuminant)
+    xyz_matrix = np.array([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041]
+    ], dtype=np.float32)
     
-    return (116*y - 16, 500*(x-y), 200*(y-z))
+    # Convert to XYZ
+    xyz = np.dot(rgb, xyz_matrix.T)
+    
+    # XYZ to LAB
+    epsilon = 0.008856
+    kappa = 903.3
+    
+    # Compute f(t)
+    mask = xyz > epsilon
+    f = np.zeros_like(xyz)
+    f[mask] = np.power(xyz[mask], 1/3)
+    f[~mask] = (kappa * xyz[~mask] + 16) / 116
+    
+    # Compute LAB
+    lab = np.zeros_like(xyz)
+    lab[:, 0] = 116 * f[:, 1] - 16  # L
+    lab[:, 1] = 500 * (f[:, 0] - f[:, 1])  # a
+    lab[:, 2] = 200 * (f[:, 1] - f[:, 2])  # b
+    
+    return lab[0] if lab.shape[0] == 1 else lab
 
-# Optimize: Pre-compute LAB values for palette so we don't do it on every function call
-PALETTE_LAB = [(i, _rgb_to_lab(r, g, b)) for i, (r, g, b) in enumerate(PALETTE)]
+# Pre-compute LAB values for palette using vectorized conversion
+PALETTE_ARRAY = np.array(PALETTE, dtype=np.float32)
+PALETTE_LAB = [(i, lab) for i, lab in enumerate(_rgb_to_lab_vectorized(PALETTE_ARRAY))]
 
 def find_closest_palette_index(pixel, x=0, y=0, error=None):
     """
-    Find the closest matching color in our palette using LAB color space,
-    to make for better human-perceptual color matching vs. direct RGB /
-    Euclidean lookup, which was our first pass.
+    Find the closest matching color in our palette using vectorized LAB color space.
+    Uses NumPy for efficient distance calculations.
     """
     r, g, b = pixel
     if error is not None:
@@ -62,19 +87,12 @@ def find_closest_palette_index(pixel, x=0, y=0, error=None):
         g = max(0, min(255, int(g + error[1])))
         b = max(0, min(255, int(b + error[2])))
     
-    # Convert pixel to LAB
-    lab = _rgb_to_lab(r, g, b)
+    lab = _rgb_to_lab_vectorized((r, g, b))
     
-    # Find closest color in LAB space
-    min_distance = float('inf')
-    best_index = 0xE6
-    
-    for idx, (_, lab_color) in enumerate(PALETTE_LAB):
-        # Calculate distance in LAB space
-        distance = sum((c1-c2)**2 for c1, c2 in zip(lab, lab_color))
-        if distance < min_distance:
-            min_distance = distance
-            best_index = idx
+    # Calculate distances
+    lab_diffs = np.array([lab_color for _, lab_color in PALETTE_LAB]) - lab
+    distances = np.sum(lab_diffs * lab_diffs, axis=1)
+    best_index = np.argmin(distances)
     
     # Calculate quantization error for error diffusion
     if error is not None:
