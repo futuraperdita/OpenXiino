@@ -1,5 +1,6 @@
 """Classes for converting from PIL image to Xiino-format bytes."""
 import math
+import os
 from base64 import b64encode
 from dataclasses import dataclass
 import PIL.Image
@@ -9,7 +10,6 @@ import cairosvg
 import io
 import asyncio
 from typing import Union, Optional, List, Tuple, Dict, Any
-from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 # Security constants
@@ -20,9 +20,6 @@ import lib.scanline as scanline
 import lib.mode9 as mode9
 from lib.xiino_palette_common import PALETTE
 from lib.logger import image_logger
-
-# Thread pool for CPU-intensive operations
-_thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ebd_converter")
 
 @dataclass
 class EBDImage:
@@ -48,18 +45,12 @@ class EBDConverter:
 
     def __init__(
         self,
-        image: Union[PIL.Image.Image, str],
-        override_scale_logic: bool = False
+        image: Union[PIL.Image.Image, str]
     ) -> None:
         """Initialize with safety checks and limits."""
         self._image = image
-        self._override_scale_logic = override_scale_logic
-        self._init_complete = asyncio.Event()
         self.image: Optional[PIL.Image.Image] = None
         self._cleanup_required = False
-        
-        # Start initialization
-        asyncio.create_task(self._initialize())
 
     async def cleanup(self) -> None:
         """Clean up resources."""
@@ -103,26 +94,16 @@ class EBDConverter:
             # Extract original dimensions
             orig_width, orig_height = self.__extract_svg_dimensions(svg_content)
             
-            # Calculate target dimensions maintaining aspect ratio
-            if orig_width < 100 and orig_height < 100:
-                target_width = orig_width
-                target_height = orig_height
-            else:
-                target_width = 153 if orig_width > 306 else math.ceil(orig_width / 2)
-                scale_factor = target_width / orig_width
-                target_height = math.ceil(orig_height * scale_factor)
-            
-            async with asyncio.timeout(SVG_PROCESSING_TIMEOUT):
-                # Run in executor to prevent blocking
-                png_data = await asyncio.to_thread(
-                    cairosvg.svg2png,
-                    url=svg_content if is_file else None,
-                    bytestring=svg_content.encode('utf-8') if not is_file else None,
-                    output_width=target_width,
-                    output_height=target_height,
-                    scale=1.0
-                )
-                return PIL.Image.open(io.BytesIO(png_data))
+            # Direct synchronous conversion at original size
+            png_data = cairosvg.svg2png(
+                url=svg_content if is_file else None,
+                bytestring=svg_content.encode('utf-8') if not is_file else None,
+                output_width=orig_width,
+                output_height=orig_height,
+                scale=1.0
+            )
+            return PIL.Image.open(io.BytesIO(png_data))
+                    
         except asyncio.TimeoutError:
             raise TimeoutError("SVG processing timeout")
         except Exception as e:
@@ -134,97 +115,109 @@ class EBDConverter:
             if isinstance(self._image, str):
                 # Process SVG with security checks
                 if self._image.lower().endswith('.svg') or '<svg' in self._image[:1000].lower():
+                    # Check SVG size before processing
+                    svg_content = self._image
+                    if not self._image.lower().endswith('.svg'):
+                        svg_size = len(svg_content.encode('utf-8'))
+                        if svg_size > MAX_SVG_SIZE:
+                            raise ValueError("SVG content exceeds maximum allowed size")
+                    else:
+                        # For file paths, check file size
+                        if os.path.getsize(self._image) > MAX_SVG_SIZE:
+                            raise ValueError("SVG content exceeds maximum allowed size")
+                        
                     image = await self._convert_svg(
                         self._image, 
                         is_file=self._image.lower().endswith('.svg')
                     )
                 else:
                     # Open regular image file with size validation
-                    image = await asyncio.to_thread(PIL.Image.open, self._image)
+                    image = PIL.Image.open(self._image)
                     if image.width * image.height > 1000000:
                         raise ValueError("Image dimensions too large")
             else:
                 image = self._image
 
-            # Apply scaling logic only for non-SVG images
-            if not self._override_scale_logic and not (
-                isinstance(self._image, str) and 
-                (self._image.lower().endswith('.svg') or '<svg' in self._image[:1000].lower())
-            ):
-                if image.width > 306:
-                    new_width = 153
-                    new_height = math.ceil((image.height / image.width) * 153)
-                else:
-                    new_width = math.ceil(image.width / 2)
-                    new_height = math.ceil(image.height / 2)
+            # Check image dimensions before any scaling
+            if image.width * image.height > 1000000:
+                raise ValueError("Image dimensions too large")
 
-                image = await asyncio.to_thread(
-                    image.resize,
+            # Apply Xiino's scaling requirements
+            if image.width > 306:
+                # Scale down to 153 pixels for large images
+                new_width = 153
+                new_height = int((image.height / image.width) * 153)
+                image = image.resize(
                     (new_width, new_height),
                     PIL.Image.Resampling.LANCZOS
                 )
+            elif image.width > 100:
+                # Scale to half size for medium images
+                new_width = int(image.width * 0.5)
+                new_height = int(image.height * 0.5)
+                image = image.resize(
+                    (new_width, new_height),
+                    PIL.Image.Resampling.LANCZOS
+                )
+            # Images <= 100px wide are not scaled
 
             # Handle transparency
             try:
                 # Convert palette images with transparency to RGBA first
                 if image.mode == "P" and image.info.get("transparency") is not None:
-                    image = await asyncio.to_thread(image.convert, "RGBA")
+                    image = image.convert("RGBA")
                 
                 if image.mode == "RGBA":
                     background = PIL.Image.new("RGBA", image.size, (255, 255, 255))
-                    self.image = await asyncio.to_thread(
-                        lambda: PIL.Image.alpha_composite(background, image).convert("RGB")
-                    )
+                    self.image = PIL.Image.alpha_composite(background, image).convert("RGB")
                 else:
-                    self.image = await asyncio.to_thread(image.convert, "RGB")
+                    self.image = image.convert("RGB")
             except ValueError as e:
                 image_logger.error(f"Image composite failed for size {image.size}")
                 raise e
                 
             self._cleanup_required = True
-            self._init_complete.set()
         except Exception as e:
             image_logger.error(f"Initialization failed: {str(e)}")
             raise
 
-    async def _ensure_initialized(self) -> None:
-        """Ensure the converter is initialized before operations."""
-        await self._init_complete.wait()
-
     async def convert_bw(self, compressed: bool = False) -> EBDImage:
         """Convert the image to black and white (1-bit)."""
-        await self._ensure_initialized()
+        if not self.image:
+            await self._initialize()
         if compressed:
-            data = await asyncio.to_thread(self._convert_mode1)
+            data = self._convert_mode1()
             return EBDImage(data, width=self.image.width, height=self.image.height, mode=1)
-        data = await asyncio.to_thread(self._convert_mode0)
+        data = self._convert_mode0()
         return EBDImage(data, width=self.image.width, height=self.image.height, mode=0)
 
     async def convert_gs(self, depth: int = 4, compressed: bool = False) -> EBDImage:
         """Convert the image to greyscale."""
-        await self._ensure_initialized()
+        if not self.image:
+            await self._initialize()
         if depth == 2:
             if compressed:
-                data = await asyncio.to_thread(self._convert_mode3)
+                data = self._convert_mode3()
                 return EBDImage(data, width=self.image.width, height=self.image.height, mode=3)
-            data = await asyncio.to_thread(self._convert_mode2)
+            data = self._convert_mode2()
             return EBDImage(data, width=self.image.width, height=self.image.height, mode=2)
         elif depth == 4:
             if compressed:
-                data = await asyncio.to_thread(self._convert_mode4)
+                data = self._convert_mode4()
                 return EBDImage(data, width=self.image.width, height=self.image.height, mode=4)
-            data = await asyncio.to_thread(self._convert_mode5)
+            data = self._convert_mode5()
             return EBDImage(data, width=self.image.width, height=self.image.height, mode=5)
         else:
             raise ValueError("Unsupported bit depth for greyscale.")
 
     async def convert_colour(self, compressed: bool = False) -> EBDImage:
         """Convert the image to 8-bit (231 colour)."""
-        await self._ensure_initialized()
+        if not self.image:
+            await self._initialize()
         if compressed:
-            data = await asyncio.to_thread(mode9.compress_mode9, self.image)
+            data = mode9.compress_mode9(self.image)
             return EBDImage(data, width=self.image.width, height=self.image.height, mode=9)
-        data = await asyncio.to_thread(self._convert_mode8)
+        data = self._convert_mode8()
         return EBDImage(data, width=self.image.width, height=self.image.height, mode=8)
 
     def _convert_mode0(self) -> bytes:
@@ -244,7 +237,7 @@ class EBDConverter:
 
     def _convert_mode1(self) -> bytes:
         """Convert to mode1 (one-bit, scanline compression)."""
-        width_bytes = math.ceil(self.image.width / 2)
+        width_bytes = math.ceil(self.image.width / 8)  # 8 pixels per byte for black and white
         return scanline.compress_data_with_scanline(self._convert_mode0(), width_bytes)
 
     def _convert_mode2(self) -> bytes:
