@@ -10,7 +10,7 @@ from lib.xiino_html_converter import XiinoHTMLParser
 from lib.controllers.page_controller import PageController
 from lib.logger import setup_logging, server_logger
 from lib.cookie_manager import CookieManager
-from lib.httpclient import fetch, fetch_binary, ContentTooLargeError
+from lib.httpclient import fetch, fetch_binary, post, ContentTooLargeError
 from lib.xiino_image_converter import EBDConverter
 
 # Load environment variables and setup logging
@@ -64,6 +64,75 @@ class XiinoServer:
         if not parsed.netloc:
             return False
         return True
+
+    async def handle_xiino_post(self, request: web.Request) -> web.Response:
+        """Handle POST requests from Xiino browser"""
+        request_start = time.time()
+        server_logger.debug(f"Starting POST request handling for {request.path_qs}")
+        
+        # Check rate limit
+        if self.check_rate_limit(request.remote):
+            raise web.HTTPTooManyRequests(text="Too many requests")
+            
+        # Get URL from query string
+        url = request.query.get('url')
+        if not url:
+            return await self.render_page("error_404")
+
+        # Handle xiino URLs and validate
+        if not self.validate_url(url):
+            return await self.render_page("error_404")
+
+        try:
+            # Get form data from POST body
+            form_data = await request.post()
+            
+            # Get cookies for request
+            request_cookies = CookieManager.prepare_request_cookies(
+                request.headers.get('Cookie'),
+                url
+            )
+            
+            # Submit form data
+            content, response_url, response_cookies = await post(
+                url,
+                dict(form_data),
+                cookies=request_cookies
+            )
+            
+            # Parse response HTML
+            gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.path_qs)
+            grayscale_depth = int(gscale_depth) if gscale_depth else None
+            
+            parser = XiinoHTMLParser(
+                base_url=response_url,
+                grayscale_depth=grayscale_depth,
+                cookies=request_cookies
+            )
+            
+            parse_start = time.time()
+            await parser.feed_async(content)
+            clean_html = parser.get_parsed_data()
+            parse_duration = time.time() - parse_start
+            server_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
+            
+            # Create response with cookies
+            response = web.Response(
+                body=self._create_response_body(clean_html),
+                content_type='text/html'
+            )
+            
+            # Add cookies to response
+            for cookie_header in CookieManager.prepare_response_cookies(response_cookies, response_url):
+                response.headers.add('Set-Cookie', cookie_header)
+                
+            return response
+            
+        except ContentTooLargeError:
+            return await self.render_page("page_too_large")
+        except Exception as e:
+            server_logger.error(f"Error processing POST request to {url}: {str(e)}")
+            return await self.render_page("error_404")
 
     async def handle_xiino_request(self, request: web.Request) -> web.Response:
         """Main request handler for Xiino browser requests"""
@@ -277,6 +346,7 @@ async def init_app() -> web.Application:
     
     # Add routes
     app.router.add_get('/', server.handle_xiino_request)
+    app.router.add_post('/', server.handle_xiino_post)
     
     # Setup cleanup
     async def cleanup(app):

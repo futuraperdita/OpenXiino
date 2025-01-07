@@ -12,22 +12,24 @@ The original OpenXiino was meant to be a "MVP" for using the Xiino browser.
 
 In order to better support some parts of the modern Web, this fork is developing a series of upgrades:
 
-- Some bug fixes around OpenXiino's image color
 - Docker container support
 - Fully configurable via environment variables
-- Asynchronous, threaded capable server, using `asyncio` and `aiohttp`
+- `aiohttp` based, async request handling
+- `numpy`-vectorized image conversion and compression
+- Better image conversion using human-perceptual color algorithms and dithering
 - Improved error handling
-- Ability to set various client limits, such as overall page weight
+- Ability to set various client limits, such as overall page weight and request rate limits
 - Python-standard logging functionality
-- Templated `about:` pages
-- Basic SVG support
-- Basic Cookie support
+- Templated `about` and error pages with the proprietary `.xiino` domain.
+- Basic SVG support via CairoSVG
+- Basic Cookie support to Xiino specifications
 - Stricter support for Xiino 3.4E HTML tags (e.g. attribute and value-level enforcement)
-- A light suite of unit tests using `pytest`
+- A suite of unit tests using `pytest`
+- GitHub CI workflow for test suite
 
-The end result is to build an OpenXiino that is a little more "production-grade", such that it could be run as a service for a PalmOS community.
+The end result is to try to build an OpenXiino that is a little more "production-grade", such that it could be run as a service for a small PalmOS community.
 
-Note that JavaScript of any type is still not supported. The JavaScript implementation of Xiino is basically DHTML-level and is too small for the majority of reason to support JS today, which is for single-page applications written in major frameworks such as React. It's best to think of OpenXiino as a minimal translation layer on already relatively minimal pages. You can use it as a modern TLS-capable proxy to browse the now mostly-HTTPS web without having to worry about the obsolete SSL stack built into Xiino.
+**Note that JavaScript of any type is still not supported.** The JavaScript implementation of Xiino is basically DHTML-level and is too small for the majority of reason to support JS today, which is for single-page applications written in major frameworks such as React. It's best to think of OpenXiino as a minimal translation layer on already relatively minimal pages. You can use it as a modern TLS-capable proxy to browse the now mostly-HTTPS web without having to worry about the obsolete SSL stack built into Xiino.
 
 I'm maintaining this fork outside of nicl83/OpenXiino until it reaches some stability. After that, I'll ask the original maintainer if they're interested in upstreaming any of these changes.
 

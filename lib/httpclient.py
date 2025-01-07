@@ -90,6 +90,81 @@ async def fetch(
                 response_cookies
             )
 
+async def post(
+    url: str,
+    data: Dict[str, str],
+    *,
+    cookies: Optional[Dict[str, str]] = None,
+    timeout: Optional[float] = None
+) -> Tuple[Union[str, None], str, Dict[str, str]]:
+    """
+    Submit form data via POST using aiohttp.
+    Returns (content, final_url, cookies)
+    """
+    start_time = time.time()
+    timeout_value = aiohttp.ClientTimeout(total=timeout or DEFAULT_TIMEOUT)
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    
+    server_logger.debug(f"Starting POST request to URL: {url}")
+    server_logger.debug(f"Using timeout: {timeout_value.total}s")
+    server_logger.debug(f"POST data: {data}")
+    if cookies:
+        server_logger.debug(f"Using cookies: {cookies}")
+    
+    async with aiohttp.ClientSession(cookie_jar=None) as session:
+        async with session.post(
+            url,
+            headers=headers,
+            cookies=cookies,
+            data=data,
+            proxy=PROXY,
+            timeout=timeout_value,
+            allow_redirects=True,
+            max_redirects=10
+        ) as response:
+            if str(response.url).startswith('https://') and url.startswith('http://'):
+                server_logger.debug(f"Connection upgraded to HTTPS: {response.url}")
+            
+            # Get response cookies
+            response_cookies = {}
+            for cookie_name, cookie_morsel in response.cookies.items():
+                response_cookies[cookie_name] = cookie_morsel.value
+                
+            # Check content length if available in headers
+            content_length = response.headers.get('Content-Length')
+            if content_length and int(content_length) > MAX_PAGE_SIZE:
+                server_logger.warning(f"Content length {content_length} bytes exceeds limit of {MAX_PAGE_SIZE} bytes")
+                raise ContentTooLargeError()
+
+            # Read content in chunks to check size
+            content = ''
+            current_size = 0
+            async for chunk in response.content.iter_chunks():
+                chunk_data = chunk[0]  # chunk is a tuple (data, end_of_chunk)
+                current_size += len(chunk_data)
+                if current_size > MAX_PAGE_SIZE:
+                    server_logger.warning(f"Content size {current_size} bytes exceeds limit of {MAX_PAGE_SIZE} bytes")
+                    raise ContentTooLargeError()
+                content += chunk_data.decode('utf-8', errors='replace')
+
+            end_time = time.time()
+            duration = end_time - start_time
+            
+            server_logger.debug(f"POST request completed in {duration:.2f}s")
+            server_logger.debug(f"Final URL after redirects: {response.url}")
+            server_logger.debug(f"Response status: {response.status}")
+            server_logger.debug(f"Response cookies: {response_cookies}")
+            server_logger.debug(f"Content size: {current_size} bytes")
+            
+            return (
+                content,
+                str(response.url),
+                response_cookies
+            )
+
 async def fetch_binary(
     url: str,
     *,
