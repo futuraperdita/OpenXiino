@@ -1,7 +1,8 @@
 import os
 import time
+import ssl
 from typing import Dict, Optional, Tuple, Union
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 import aiohttp
 from aiohttp_socks import ProxyConnector
 from lib.logger import server_logger
@@ -20,6 +21,11 @@ MAX_PAGE_SIZE = int(os.getenv('HTTP_MAX_PAGE_SIZE', 100)) * 1024  # Convert KB t
 # Security settings
 MAX_REDIRECTS = int(os.getenv('SECURITY_MAX_REDIRECTS', '10'))
 ALLOW_REDIRECTS = os.getenv('SECURITY_ALLOW_REDIRECTS', 'true').lower() == 'true'
+ATTEMPT_HTTPS_UPGRADE = os.getenv('SECURITY_ATTEMPT_HTTPS_UPGRADE', 'true').lower() == 'true'
+
+# SSL context for HTTPS connections
+ssl_context = ssl.create_default_context()
+ssl_context.set_alpn_protocols(['http/1.1', 'http/1.0'])
 
 # Configure SOCKS proxy if available
 PROXY_URL = os.getenv('HTTP_SOCKS_PROXY')
@@ -36,6 +42,39 @@ else:
 class ContentTooLargeError(Exception):
     """Raised when content exceeds maximum size limit"""
     pass
+
+async def try_https_upgrade(url: str, session: aiohttp.ClientSession, **kwargs) -> Optional[aiohttp.ClientResponse]:
+    """
+    Attempt to upgrade an HTTP connection to HTTPS.
+    Returns the response if successful, None if upgrade failed.
+    """
+    if not ATTEMPT_HTTPS_UPGRADE or url.startswith('https://'):
+        return None
+        
+    # Try direct HTTPS
+    https_url = urlunparse(urlparse(url)._replace(scheme='https'))
+    try:
+        # Add Upgrade header for HTTP/1.1 upgrade mechanism
+        headers = kwargs.get('headers', {}).copy()
+        headers.update({
+            'Upgrade': 'TLS/1.0, HTTP/1.1',
+            'Connection': 'Upgrade'
+        })
+        kwargs['headers'] = headers
+        
+        response = await session.get(https_url, ssl=ssl_context, **kwargs)
+        if response.status == 101:  # Switching Protocols
+            server_logger.debug("Successfully upgraded to HTTPS via HTTP/1.1 Upgrade")
+            return response
+        elif response.status < 400:
+            server_logger.debug("Successfully connected via direct HTTPS")
+            return response
+        else:
+            await response.close()
+            return None
+    except (aiohttp.ClientError, ssl.SSLError) as e:
+        server_logger.debug(f"HTTPS upgrade attempt failed: {str(e)}")
+        return None
 
 async def fetch(
     url: str,
@@ -59,14 +98,23 @@ async def fetch(
     # Create connector with SOCKS5 proxy if configured
     connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
     async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
-        async with session.get(
-            url,
-            headers=headers,
-            cookies=cookies,
-            timeout=timeout_value,
-            allow_redirects=ALLOW_REDIRECTS,  # Controlled by SECURITY_ALLOW_REDIRECTS
-            max_redirects=MAX_REDIRECTS
-        ) as response:
+        # Try HTTPS upgrade first
+        kwargs = {
+            'headers': headers,
+            'cookies': cookies,
+            'timeout': timeout_value,
+            'allow_redirects': ALLOW_REDIRECTS,
+            'max_redirects': MAX_REDIRECTS
+        }
+        
+        upgraded_response = await try_https_upgrade(url, session, **kwargs)
+        if upgraded_response:
+            response = upgraded_response
+        else:
+            # Fall back to original HTTP request if upgrade fails
+            response = await session.get(url, **kwargs)
+            
+        async with response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Connection upgraded to HTTPS: {response.url}")
             # Get response cookies
@@ -133,15 +181,24 @@ async def post(
     # Create connector with SOCKS5 proxy if configured
     connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
     async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
-        async with session.post(
-            url,
-            headers=headers,
-            cookies=cookies,
-            data=data,
-            timeout=timeout_value,
-            allow_redirects=ALLOW_REDIRECTS,
-            max_redirects=MAX_REDIRECTS
-        ) as response:
+        # Try HTTPS upgrade first
+        kwargs = {
+            'headers': headers,
+            'cookies': cookies,
+            'data': data,
+            'timeout': timeout_value,
+            'allow_redirects': ALLOW_REDIRECTS,
+            'max_redirects': MAX_REDIRECTS
+        }
+        
+        upgraded_response = await try_https_upgrade(url, session, **kwargs)
+        if upgraded_response:
+            response = upgraded_response
+        else:
+            # Fall back to original HTTP request if upgrade fails
+            response = await session.post(url, **kwargs)
+            
+        async with response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Connection upgraded to HTTPS: {response.url}")
             
@@ -202,14 +259,23 @@ async def fetch_binary(
     # Create connector with SOCKS5 proxy if configured
     connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
     async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
-        async with session.get(
-            url,
-            headers=headers,
-            cookies=cookies,
-            timeout=timeout_value,
-            allow_redirects=ALLOW_REDIRECTS,  # Controlled by SECURITY_ALLOW_REDIRECTS
-            max_redirects=MAX_REDIRECTS
-        ) as response:
+        # Try HTTPS upgrade first
+        kwargs = {
+            'headers': headers,
+            'cookies': cookies,
+            'timeout': timeout_value,
+            'allow_redirects': ALLOW_REDIRECTS,
+            'max_redirects': MAX_REDIRECTS
+        }
+        
+        upgraded_response = await try_https_upgrade(url, session, **kwargs)
+        if upgraded_response:
+            response = upgraded_response
+        else:
+            # Fall back to original HTTP request if upgrade fails
+            response = await session.get(url, **kwargs)
+            
+        async with response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Binary fetch connection upgraded to HTTPS: {response.url}")
             # Get response cookies
