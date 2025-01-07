@@ -77,11 +77,11 @@ class XiinoServer:
         # Get URL from query string
         url = request.query.get('url')
         if not url:
-            return await self.render_page("not-found")
+            return await self.render_page("error_404")
 
         # Handle xiino URLs and validate
         if not self.validate_url(url):
-            return await self.render_page("not-found")
+            return await self.render_page("error_404")
 
         parsed_url = urlparse(url)
         if parsed_url.netloc.endswith('.xiino'):
@@ -145,7 +145,7 @@ class XiinoServer:
             return await self.render_page("page_too_large")
         except Exception as e:
             server_logger.error(f"Error processing URL {url}: {str(e)}")
-            return await self.render_page("not-found")
+            return await self.render_page("error_404")
 
     async def handle_image_request(self, url: str, request_cookies: dict, is_svg: bool, request: web.Request) -> web.Response:
         """Handle image URL requests"""
@@ -235,6 +235,11 @@ class XiinoServer:
             body=self._create_response_body(content),
             content_type='text/html'
         )
+    
+    def _create_response_body(self, content: str) -> bytes:
+        """Create response body with proper headers"""
+        header = bytes([0x00] * 12) + bytes([0x0D, 0x0A] * 2)
+        return header + content.encode("latin-1", errors="replace")
 
 @web.middleware
 async def error_middleware(request: web.Request, handler) -> web.Response:
@@ -242,22 +247,20 @@ async def error_middleware(request: web.Request, handler) -> web.Response:
     try:
         return await handler(request)
     except web.HTTPException as ex:
-        # Let aiohttp handle standard HTTP errors
-        raise
+        server_logger.warning(f"HTTP error {ex.status}: {str(ex)}")
+        server = request.app['server']
+        return await server.render_page(f"error_{ex.status}")
     except ContentTooLargeError:
         server_logger.warning("Content too large error")
         server = request.app['server']
-        return await server.render_page("page_too_large")
+        return await server.render_page("error_toolarge")
     except Exception as ex:
         server_logger.error(f"Unhandled error: {str(ex)}")
         server = request.app['server']
-        return await server.render_page("not-found")
+        return await server.render_page("error_500")
 
 
-    def _create_response_body(self, content: str) -> bytes:
-        """Create response body with proper headers"""
-        header = bytes([0x00] * 12) + bytes([0x0D, 0x0A] * 2)
-        return header + content.encode("latin-1", errors="replace")
+
 
 async def init_app() -> web.Application:
     """Initialize the aiohttp application"""

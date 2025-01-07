@@ -85,6 +85,19 @@ class PageController:
         }
         return self.templates['page_too_large'](context)
 
+    # HTTP status code to message mapping
+    HTTP_STATUS_MESSAGES = {
+        400: ('Bad Request', 'The request could not be understood due to malformed syntax.'),
+        401: ('Unauthorized', 'Access to this page requires proper authentication.'),
+        403: ('Forbidden', 'You do not have permission to access this resource.'),
+        404: ('Not Found', 'The requested page could not be found.'),
+        429: ('Too Many Requests', 'You have sent too many requests in a given amount of time.'),
+        500: ('Internal Server Error', 'The server encountered an unexpected condition.'),
+        502: ('Bad Gateway', 'The proxy server received an invalid response from an upstream server.'),
+        503: ('Service Unavailable', 'The server is temporarily unable to handle your request.'),
+        504: ('Gateway Timeout', 'The proxy server did not receive a timely response from the upstream server.')
+    }
+
     async def handle_page(self, page: str, request_info: Optional[dict] = None) -> str:
         """Handle page requests asynchronously"""
         # Ensure initialization
@@ -109,10 +122,32 @@ class PageController:
                 request_info.get('image_url', ''),
                 request_info.get('image_html', '')
             )
+        elif page.startswith('error_'):
+            try:
+                status_code = int(page.split('_')[1])
+                content = await self._render_http_error(status_code)
+            except (ValueError, IndexError):
+                content = await self._render_http_error(404)
         else:
-            content = await self._render_not_found()
+            content = await self._render_http_error(404)
             
         return content
+
+    async def _render_http_error(self, status_code: int) -> str:
+        """Render an HTTP error page
+        
+        Args:
+            status_code: The HTTP status code
+            
+        Returns:
+            str: The rendered error page
+        """
+        title, message = self.HTTP_STATUS_MESSAGES.get(status_code, ('Error', 'An unknown error occurred.'))
+        context = {
+            'title': title,
+            'message': message
+        }
+        return await asyncio.to_thread(self.templates['error'], context)
     
     async def _render_about(self) -> str:
         """Render the about page"""
@@ -126,13 +161,6 @@ class PageController:
             }
         }
         return await asyncio.to_thread(self.templates['about'], context)
-    
-    async def _render_more_info(self) -> str:
-        """Render the more info page"""
-        context = {
-            'title': 'More About OpenXiino'
-        }
-        return await asyncio.to_thread(self.templates['more_info'], context)
     
     async def _render_device_info(self, request_info: Optional[dict]) -> str:
         """Render the device info page"""
@@ -149,20 +177,6 @@ class PageController:
         }
         helpers = {'gt': self._gt}
         return await asyncio.to_thread(self.templates['device_info'], context, helpers=helpers)
-    
-    async def _render_github(self) -> str:
-        """Render the GitHub page"""
-        context = {
-            'title': 'GitHub'
-        }
-        return await asyncio.to_thread(self.templates['github'], context)
-    
-    async def _render_not_found(self) -> str:
-        """Render a 404 page"""
-        context = {
-            'title': 'Page Not Found'
-        }
-        return await asyncio.to_thread(self.templates['not_found'], context)
         
     async def _render_image(self, image_url: str, image_html: str) -> str:
         """Render an image view page
