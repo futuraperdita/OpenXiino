@@ -1,35 +1,8 @@
-"Compress a PIL image using Xiino mode 9."
+"""Compress a PIL image using Xiino mode 9."""
 import PIL.Image
 import numpy as np
 from lib.ebd_control_codes import CONTROL_CODES
 from lib.xiino_palette_common import PALETTE
-
-
-"""
-Compress a PIL image using Xiino mode 9 with optimized color handling and compression.
-
-The compression strategy uses several techniques to achieve better results while maintaining
-client compatibility:
-
-1. Color Space Optimization:
-   - Uses LAB color space instead of RGB because LAB is perceptually uniform
-   - This means that distances in LAB space better match human perception of color differences
-   - Results in better color selection when reducing to the limited palette
-
-2. Error Diffusion:
-   - Implements Floyd-Steinberg dithering to maintain image quality
-   - Works by spreading the quantization error to neighboring pixels
-   - This creates patterns that are more compressible while preserving detail
-   - Particularly effective for gradients and smooth color transitions
-
-3. Pattern Matching:
-   - Uses a sliding window approach to find repeating patterns
-   - Limited to 32 pixels for performance while still catching most patterns
-   - Weights different compression methods based on their efficiency:
-     * RLE (Run Length Encoding) gets highest priority as it's most space-efficient
-     * Vertical patterns get slight boost as they're common in web images
-     * All while using only patterns the client can decompress
-"""
 
 def _rgb_to_lab_vectorized(rgb):
     """
@@ -73,87 +46,75 @@ def _rgb_to_lab_vectorized(rgb):
 
 # Pre-compute LAB values for palette using vectorized conversion
 PALETTE_ARRAY = np.array(PALETTE, dtype=np.float32)
-PALETTE_LAB = [(i, lab) for i, lab in enumerate(_rgb_to_lab_vectorized(PALETTE_ARRAY))]
+PALETTE_LAB = _rgb_to_lab_vectorized(PALETTE_ARRAY)
 
-def find_closest_palette_index(pixel, x=0, y=0, error=None):
+def find_closest_palette_colors(pixels):
     """
-    Find the closest matching color in our palette using vectorized LAB color space.
-    Uses NumPy for efficient distance calculations.
+    Vectorized version to find closest palette colors for multiple pixels at once.
     """
-    r, g, b = pixel
-    if error is not None:
-        # Apply error diffusion
-        r = max(0, min(255, int(r + error[0])))
-        g = max(0, min(255, int(g + error[1])))
-        b = max(0, min(255, int(b + error[2])))
+    pixels = np.asarray(pixels, dtype=np.float32)
+    if pixels.ndim == 1:
+        pixels = pixels.reshape(1, 3)
     
-    lab = _rgb_to_lab_vectorized((r, g, b))
+    # Convert input pixels to LAB
+    pixels_lab = _rgb_to_lab_vectorized(pixels)
     
-    # Calculate distances
-    lab_diffs = np.array([lab_color for _, lab_color in PALETTE_LAB]) - lab
-    distances = np.sum(lab_diffs * lab_diffs, axis=1)
-    best_index = np.argmin(distances)
+    # Reshape arrays for broadcasting
+    pixels_lab = pixels_lab.reshape(-1, 1, 3)  # Shape: (N, 1, 3)
+    palette_lab = PALETTE_LAB.reshape(1, -1, 3)  # Shape: (1, P, 3)
     
-    # Calculate quantization error for error diffusion
-    if error is not None:
-        selected_color = PALETTE[best_index]
-        return best_index, (
-            r - selected_color[0],
-            g - selected_color[1],
-            b - selected_color[2]
-        )
+    # Calculate distances to all palette colors at once
+    diff = pixels_lab - palette_lab
+    distances = np.sum(diff * diff, axis=2)  # Sum along color channels
+    indices = np.argmin(distances, axis=1)
     
-    return best_index
+    # Calculate quantization errors
+    selected_colors = PALETTE_ARRAY[indices]
+    errors = pixels - selected_colors
+    
+    return indices, errors
 
 def compress_mode9(image: PIL.Image.Image):
     """
     Compress an image using mode 9 compression with optimized color handling.
-    
-    The compression process works in two main phases:
-    
-    1. Translate color space, optimize image using Floyd-Steinberg dithering
-    2. Compression / Pattern-Matching phase
+    Uses numpy for vectorized operations where possible.
     """
-    # Convert to RGB to ensure consistent color format
+    # Convert to RGB and get numpy array
     image = image.convert("RGB")
-    
-    # Initialize error buffer for Floyd-Steinberg dithering
     width, height = image.size
-    error_buffer = [[None] * width for _ in range(height)]
+    data = np.array(image, dtype=np.float32)
     
-    data = list(image.getdata())
+    # Initialize error buffer
+    error_buffer = np.zeros((height, width, 3), dtype=np.float32)
+    
+    # Process image in rows for memory efficiency
     rows = []
     buffer = bytearray()
     
-    # Implement Floyd-Steinberg dithering on image data
     for y in range(height):
-        row_data = []
-        for x in range(width):
-            pixel = data[y * width + x]
-            # Get error from previous pixels if any
-            error = error_buffer[y][x] if error_buffer[y][x] is not None else (0, 0, 0)
-            
-            # Find closest color and get quantization error
-            color_index, quant_error = find_closest_palette_index(pixel, x, y, error)
-            row_data.append(pixel)  # Store original pixel for compression
-            
-            # Distribute error
-            if x < width - 1:
-                error_buffer[y][x + 1] = tuple(e * 7/16 for e in quant_error) if error_buffer[y][x + 1] is None else \
-                    tuple(e1 + e2 * 7/16 for e1, e2 in zip(error_buffer[y][x + 1], quant_error))
-            if y < height - 1:
-                if x > 0:
-                    error_buffer[y + 1][x - 1] = tuple(e * 3/16 for e in quant_error) if error_buffer[y + 1][x - 1] is None else \
-                        tuple(e1 + e2 * 3/16 for e1, e2 in zip(error_buffer[y + 1][x - 1], quant_error))
-                error_buffer[y + 1][x] = tuple(e * 5/16 for e in quant_error) if error_buffer[y + 1][x] is None else \
-                    tuple(e1 + e2 * 5/16 for e1, e2 in zip(error_buffer[y + 1][x], quant_error))
-                if x < width - 1:
-                    error_buffer[y + 1][x + 1] = tuple(e * 1/16 for e in quant_error) if error_buffer[y + 1][x + 1] is None else \
-                        tuple(e1 + e2 * 1/16 for e1, e2 in zip(error_buffer[y + 1][x + 1], quant_error))
+        row_data = data[y]
+        # Apply accumulated error
+        row_with_error = np.clip(row_data + error_buffer[y], 0, 255)
         
+        # Find closest colors and get errors
+        indices, quant_errors = find_closest_palette_colors(row_with_error)
+        
+        # Store original pixels for compression
         rows.append(row_data)
+        
+        # Distribute error (Floyd-Steinberg)
+        if y < height - 1:
+            # Right pixel (7/16)
+            error_buffer[y, 1:] += quant_errors[:-1] * 7/16
+            # Bottom-left pixel (3/16)
+            error_buffer[y+1, :-1] += quant_errors[1:] * 3/16
+            # Bottom pixel (5/16)
+            error_buffer[y+1, :] += quant_errors * 5/16
+            # Bottom-right pixel (1/16)
+            if y < height - 1 and width > 1:
+                error_buffer[y+1, 1:] += quant_errors[:-1] * 1/16
     
-    # Compress rows with enhanced pattern matching
+    # Compress rows
     for index, row in enumerate(rows):
         if index == 0:
             buffer.extend(compress_line(row, None, True))
@@ -162,131 +123,101 @@ def compress_mode9(image: PIL.Image.Image):
     
     return bytes(buffer)
 
-
-def compress_line(line: list, prev_line: list | None, first_line: bool):
+def compress_line(line: np.ndarray, prev_line: np.ndarray | None, first_line: bool):
     """
     Compress a single line of image data using pattern matching and RLE.
-    
-    The compression uses two main strategies in order of preference:
-    
-    1. RLE (Run Length Encoding)
-    2. Pattern Matching
-    
-    All compression methods use control codes that are compatible with
-    the original client, ensuring the compressed data can be decoded.
+    Uses numpy for efficient pattern matching with robust shape handling.
     """
-    active_colour = 0x00
     buffer = bytearray()
-    
+    line = np.asarray(line)
     index = 0
+    
     while index < len(line):
         pixel = line[index]
         
-        # Initialize pattern matching lengths
-        lb_copy_length_a = 0  # offset -1
-        lb_copy_length_b = 0  # offset 0
-        lb_copy_length_c = 0  # offset 1
+        # Initialize pattern matching lengths using numpy operations
+        lb_copy_length_a = lb_copy_length_b = lb_copy_length_c = 0
         
-        if not first_line:
-            # Align sliding window to cacheline
+        if not first_line and prev_line is not None:
             window_size = min(21, len(line) - index)
             
-            # Standard lookback patterns
-            if index > 0:
-                while (index + lb_copy_length_a < len(line) and
-                       index - 1 + lb_copy_length_a < len(prev_line) and
-                       line[index + lb_copy_length_a] == prev_line[index - 1 + lb_copy_length_a]):
-                    lb_copy_length_a += 1
-                    if lb_copy_length_a >= window_size:
-                        break
+            def compare_arrays(arr1, arr2):
+                """Helper function to safely compare arrays of potentially different shapes"""
+                if arr1.shape != arr2.shape:
+                    min_len = min(len(arr1), len(arr2))
+                    arr1 = arr1[:min_len]
+                    arr2 = arr2[:min_len]
+                return np.all(arr1 == arr2, axis=1)
             
-            while (index + lb_copy_length_b < len(line) and
-                   index + lb_copy_length_b < len(prev_line) and
-                   line[index + lb_copy_length_b] == prev_line[index + lb_copy_length_b]):
-                lb_copy_length_b += 1
-                if lb_copy_length_b >= window_size:
-                    break
+            if index > 0 and index - 1 + window_size <= len(prev_line):
+                # Offset -1
+                curr_slice = line[index:index+window_size]
+                prev_slice = prev_line[index-1:index-1+window_size]
+                match_a = compare_arrays(curr_slice, prev_slice)
+                lb_copy_length_a = np.argmin(match_a) if not np.all(match_a) else len(match_a)
             
-            if index + 1 < len(prev_line):
-                while (index + lb_copy_length_c < len(line) and
-                       index + 1 + lb_copy_length_c < len(prev_line) and
-                       line[index + lb_copy_length_c] == prev_line[index + 1 + lb_copy_length_c]):
-                    lb_copy_length_c += 1
-                    if lb_copy_length_c >= window_size:
-                        break
-
-        # Method 2: RLE compression
-        if index + 1 > len(line) - 1:
-            # bail here! we'll except if we try to check RLE viability!
-            rle_length = 0
-        elif line[index + 1] != pixel:
-            # RLE does not apply here
+            if index + window_size <= len(prev_line):
+                # Offset 0
+                curr_slice = line[index:index+window_size]
+                prev_slice = prev_line[index:index+window_size]
+                match_b = compare_arrays(curr_slice, prev_slice)
+                lb_copy_length_b = np.argmin(match_b) if not np.all(match_b) else len(match_b)
+            
+            if index + 1 < len(prev_line) and index + 1 + window_size <= len(prev_line):
+                # Offset 1
+                curr_slice = line[index:index+window_size]
+                prev_slice = prev_line[index+1:index+1+window_size]
+                match_c = compare_arrays(curr_slice, prev_slice)
+                lb_copy_length_c = np.argmin(match_c) if not np.all(match_c) else len(match_c)
+        
+        # RLE compression
+        if index + 1 >= len(line):
             rle_length = 0
         else:
-            rle_length = 0
-            while (
-                index + rle_length < len(line)
-                and line[index + rle_length] == pixel
-            ):
-                rle_length += 1
-
-        # Compare compression methods (RLE, lookback)
-        # Weight the compression methods while maintaining client compatibility
+            # Compare each subsequent pixel with the current one
+            curr_pixel = line[index]
+            remaining = line[index:]
+            matches = np.all(remaining == curr_pixel, axis=1)
+            rle_length = np.argmin(matches) if not np.all(matches) else len(matches)
+        
+        # Compare compression methods
         compare_dict = {
-            "rle": rle_length * 1.2,  # Prefer RLE slightly
+            "rle": rle_length * 1.2,
             "lb_-1": lb_copy_length_a,
-            "lb_0": lb_copy_length_b * 1.1,  # Slight preference for vertical patterns
+            "lb_0": lb_copy_length_b * 1.1,
             "lb_1": lb_copy_length_c
         }
+        
         best_compression = max(compare_dict, key=compare_dict.get)
-        # Convert back to original method names for control code lookup
         best_compression = best_compression.split('*')[0].strip()
-
+        
         if all(value == 0 for value in compare_dict.values()):
-            # data can't be compressed
-            # rle not applicable
-            # and does not appear anywhere on previous line
-            # just write the colour to the buffer
-            active_colour = find_closest_palette_index(pixel)
-            buffer.append(active_colour)
-        # HACK force RLE
+            # No compression possible, write color directly
+            color_index = find_closest_palette_colors([pixel])[0][0]
+            buffer.append(color_index)
         elif best_compression == "rle":
-            active_colour = find_closest_palette_index(pixel)
-            buffer.append(active_colour)
-
+            color_index = find_closest_palette_colors([pixel])[0][0]
+            buffer.append(color_index)
+            
             if rle_length >= 6:
-                # RLE beyond 6 uses 6's code and a length
                 buffer.append(CONTROL_CODES["RLE_6"])
                 buffer.append(rle_length - 6)
             else:
                 buffer.append(CONTROL_CODES[f"RLE_{rle_length}"])
-
+            
             index += rle_length
-
-        elif best_compression == "lb_-1":
-            if 1 <= lb_copy_length_a <= 5:
-                buffer.append(CONTROL_CODES[f"COPY_{lb_copy_length_a}_OFFSET_-1"])
+        else:
+            length = compare_dict[best_compression]
+            offset = {"lb_-1": -1, "lb_0": 0, "lb_1": 1}[best_compression]
+            
+            if 1 <= length <= 5:
+                buffer.append(CONTROL_CODES[f"COPY_{int(length)}_OFFSET_{offset}"])
             else:
-                buffer.append(CONTROL_CODES["COPY_6_OFFSET_-1"])
-                buffer.append(lb_copy_length_a - 6)
-            index += lb_copy_length_a - 1
-
-        elif best_compression == "lb_0":
-            if 1 <= lb_copy_length_b <= 5:
-                buffer.append(CONTROL_CODES[f"COPY_{lb_copy_length_b}_OFFSET_0"])
-            else:
-                buffer.append(CONTROL_CODES["COPY_6_OFFSET_0"])
-                buffer.append(lb_copy_length_b - 6)
-            index += lb_copy_length_b - 1
-
-        elif best_compression == "lb_1":
-            if 1 <= lb_copy_length_c <= 5:
-                buffer.append(CONTROL_CODES[f"COPY_{lb_copy_length_c}_OFFSET_1"])
-            else:
-                buffer.append(CONTROL_CODES["COPY_6_OFFSET_1"])
-                buffer.append(lb_copy_length_c - 6)
-            index += lb_copy_length_c - 1
-
+                buffer.append(CONTROL_CODES[f"COPY_6_OFFSET_{offset}"])
+                buffer.append(int(length) - 6)
+            
+            index += int(length) - 1
+        
         index += 1
-
+    
     return bytes(buffer)
