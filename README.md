@@ -15,12 +15,13 @@ In order to better support some parts of the modern Web, this fork is developing
 - Some bug fixes around OpenXiino's image color
 - Docker container support
 - Fully configurable via environment variables
-- Asynchronous, multi-CPU capable server, using `aiohttp`
+- Asynchronous, threaded capable server, using `asyncio` and `aiohttp`
 - Improved error handling
+- Ability to set various client limits, such as overall page weight
 - Python-standard logging functionality
 - Templated `about:` pages
-- SVG support
-- Cookie support
+- Basic SVG support
+- Basic Cookie support
 - Stricter support for Xiino 3.4E HTML tags (e.g. attribute and value-level enforcement)
 - A light suite of unit tests using `pytest`
 
@@ -53,4 +54,4 @@ python3 -m pytest tests/
 
 ## License
 
-The original code does not have a license in the repository, although it uses the OSI logo I expect it is some sort of OSI license for now. This fork will be licensed under the [GNU Affero General Public License 3.0](./LICENSE) assuming the parent code is licensed under one that is compatible.
+nicl83's original code is licensed under the more-permissive MIT license; this fork is licensed under the [GNU Affero General Public License 3.0](./LICENSE).

@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import socket
+import mimetypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 from dotenv import load_dotenv
@@ -11,7 +12,8 @@ from lib.xiino_html_converter import XiinoHTMLParser
 from lib.controllers.page_controller import PageController
 from lib.logger import setup_logging, server_logger
 from lib.cookie_manager import CookieManager
-from lib.httpclient import fetch, ContentTooLargeError
+from lib.httpclient import fetch, fetch_binary, ContentTooLargeError
+from lib.xiino_image_converter import EBDConverter
 
 # Load environment variables and setup logging
 load_dotenv()
@@ -49,6 +51,8 @@ class XiinoDataServer(BaseHTTPRequestHandler):
         super().setup()
         self.page_controller = PageController()
         self.request_start_time = None
+        self.headers_sent = False
+        self.next_ebd_ref = 1  # Counter for EBD references
         
     def check_rate_limit(self):
         """Check if request exceeds rate limit"""
@@ -88,6 +92,13 @@ class XiinoDataServer(BaseHTTPRequestHandler):
         
         return await fetch(url, cookies=cookies)
 
+    def send_headers_if_needed(self, content_type="text/html"):
+        """Send headers if they haven't been sent yet"""
+        if not self.headers_sent:
+            self.send_header("Content-type", content_type)
+            self.end_headers()
+            self.headers_sent = True
+
     async def handle_request(self):
         """Async request handler"""
         request_start = time.time()
@@ -116,6 +127,7 @@ class XiinoDataServer(BaseHTTPRequestHandler):
 
             if not url:
                 # Handle invalid requests with 404 page
+                self.send_headers_if_needed()
                 page_content = self.page_controller.handle_page("not-found")
                 self.wfile.write(bytes([0x00] * 12))
                 self.wfile.write(bytes([0x0D, 0x0A] * 2))
@@ -126,6 +138,7 @@ class XiinoDataServer(BaseHTTPRequestHandler):
             
             # Handle xiino URLs and validate
             if not url or not self.validate_url(url):
+                self.send_headers_if_needed()
                 page_content = self.page_controller.handle_page("not-found")
                 self.wfile.write(bytes([0x00] * 12))
                 self.wfile.write(bytes([0x0D, 0x0A] * 2))
@@ -157,10 +170,17 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                 else:
                     page_content = self.page_controller.handle_page(page)
                 
+                self.send_headers_if_needed()
                 self.wfile.write(bytes([0x00] * 12))
                 self.wfile.write(bytes([0x0D, 0x0A] * 2))
                 self.wfile.write(page_content.encode("latin-1", errors="replace"))
             else:
+                # Check if this is a direct image request and determine type
+                parsed_url = urlparse(url)
+                mime_type, _ = mimetypes.guess_type(parsed_url.path)
+                is_image = mime_type and mime_type.startswith('image/')
+                is_svg = (mime_type == 'image/svg+xml' or parsed_url.path.lower().endswith('.svg'))
+
                 # Handle external URLs asynchronously
                 try:
                     fetch_start = time.time()
@@ -172,64 +192,111 @@ class XiinoDataServer(BaseHTTPRequestHandler):
                             url
                         )
                         
-                        content, response_url, response_cookies = await fetch(url, cookies=request_cookies)
-                        fetch_duration = time.time() - fetch_start
-                        server_logger.debug(f"URL fetch completed in {fetch_duration:.2f}s")
-                        
-                        # Add Set-Cookie headers to response
-                        for cookie_header in CookieManager.prepare_response_cookies(
-                            response_cookies,
-                            response_url
-                        ):
-                            self.send_header("Set-Cookie", cookie_header)
+                        if is_image:
+                            # Handle direct image requests
+                            image_data, response_cookies = await fetch_binary(url, cookies=request_cookies)
+                            
+                            if is_svg:
+                                # For SVGs, pass content directly as string
+                                svg_content = image_data.decode('utf-8')
+                                converter = EBDConverter(svg_content)
+                            else:
+                                # For other images, create PIL Image
+                                from PIL import Image
+                                from io import BytesIO
+                                image = Image.open(BytesIO(image_data))
+                                converter = EBDConverter(image)
+                            await converter._ensure_initialized()
+                            
+                            # Convert to EBD format (use grayscale if requested)
+                            gscale_depth = self.GSCALE_DEPTH_REGEX.search(self.requestline)
+                            if gscale_depth:
+                                ebd_data = await converter.convert_gs(depth=int(gscale_depth.group(1)), compressed=True)
+                            else:
+                                ebd_data = await converter.convert_colour(compressed=True)
+                            
+                            # Generate HTML with EBD tags
+                            img_tag = ebd_data.generate_img_tag(name=f"#{self.next_ebd_ref}")
+                            ebd_tag = ebd_data.generate_ebdimage_tag(name=self.next_ebd_ref)
+                            
+                            # Show image in template
+                            page_content = self.page_controller.handle_page('image', {
+                                'image_url': url,
+                                'image_html': img_tag + "\n" + ebd_tag
+                            })
+                            
+                            # Add Set-Cookie headers for image response
+                            for cookie_header in CookieManager.prepare_response_cookies(
+                                response_cookies,
+                                url  # Use original URL for images since we don't have final URL
+                            ):
+                                self.send_header("Set-Cookie", cookie_header)
+                            
+                            # Write the page
+                            self.send_headers_if_needed()
+                            self.wfile.write(bytes([0x00] * 12))
+                            self.wfile.write(bytes([0x0D, 0x0A] * 2))
+                            self.wfile.write(page_content.encode("latin-1", errors="replace"))
+                            
+                            # Increment EBD reference for next image
+                            self.next_ebd_ref += 1
+                        else:
+                            # For non-image requests, fetch and parse HTML
+                            content, response_url, response_cookies = await fetch(url, cookies=request_cookies)
+                            fetch_duration = time.time() - fetch_start
+                            server_logger.debug(f"URL fetch completed in {fetch_duration:.2f}s")
+                            
+                            # Add Set-Cookie headers for HTML response
+                            for cookie_header in CookieManager.prepare_response_cookies(
+                                response_cookies,
+                                response_url
+                            ):
+                                self.send_header("Set-Cookie", cookie_header)
+                            
+                            self.send_headers_if_needed()
+
+                            
+                            gscale_depth = self.GSCALE_DEPTH_REGEX.search(self.requestline)
+                            grayscale_depth = int(gscale_depth.group(1)) if gscale_depth else None
+                            
+                            parse_start = time.time()
+
+                            parser = XiinoHTMLParser(
+                                base_url=response_url,
+                                grayscale_depth=grayscale_depth,
+                                cookies=request_cookies  # Pass cookies from the request
+                            )
+                            server_logger.debug(f"Processing URL: {response_url}")
+                            await parser.feed_async(content)
+                            clean_html = parser.get_parsed_data()
+                            parse_duration = time.time() - parse_start
+                            server_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
+                            
+                            write_start = time.time()
+                            self.wfile.write(bytes([0x00] * 12))
+                            self.wfile.write(bytes([0x0D, 0x0A] * 2))
+                            self.wfile.write(clean_html.encode("latin-1", errors="ignore"))
+                            write_duration = time.time() - write_start
+                            server_logger.debug(f"Response write completed in {write_duration:.2f}s")
+                            
+                            total_duration = time.time() - request_start
+                            server_logger.info(
+                                f"Request completed in {total_duration:.2f}s "
+                                f"(fetch: {fetch_duration:.2f}s, "
+                                f"parse: {parse_duration:.2f}s, "
+                                f"write: {write_duration:.2f}s)"
+                            )
                     except ContentTooLargeError:
                         server_logger.warning(f"Content too large for URL: {url}")
+                        self.send_headers_if_needed()
                         page_content = self.page_controller.handle_page("page_too_large")
                         self.wfile.write(bytes([0x00] * 12))
                         self.wfile.write(bytes([0x0D, 0x0A] * 2))
                         self.wfile.write(page_content.encode("latin-1", errors="replace"))
                         return
-                    
-                    # Check if grayscale is requested
-                    gscale_depth = self.GSCALE_DEPTH_REGEX.search(self.requestline)
-                    grayscale_depth = int(gscale_depth.group(1)) if gscale_depth else None
-                    
-                    parse_start = time.time()
-                    try:
-                        parser = XiinoHTMLParser(
-                            base_url=response_url,
-                            grayscale_depth=grayscale_depth,
-                            cookies=request_cookies  # Pass cookies from the request
-                        )
-                        server_logger.debug(f"Processing URL: {response_url}")
-                        await parser.feed_async(content)
-                        clean_html = parser.get_parsed_data()
-                        parse_duration = time.time() - parse_start
-                        server_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
-                    except ContentTooLargeError:
-                        server_logger.warning(f"Content too large for URL: {url}")
-                        page_content = self.page_controller.handle_page("error_toolarge")
-                        self.wfile.write(bytes([0x00] * 12))
-                        self.wfile.write(bytes([0x0D, 0x0A] * 2))
-                        self.wfile.write(page_content.encode("latin-1", errors="replace"))
-                        return
-                    
-                    write_start = time.time()
-                    self.wfile.write(bytes([0x00] * 12))
-                    self.wfile.write(bytes([0x0D, 0x0A] * 2))
-                    self.wfile.write(clean_html.encode("latin-1", errors="ignore"))
-                    write_duration = time.time() - write_start
-                    server_logger.debug(f"Response write completed in {write_duration:.2f}s")
-                    
-                    total_duration = time.time() - request_start
-                    server_logger.info(
-                        f"Request completed in {total_duration:.2f}s "
-                        f"(fetch: {fetch_duration:.2f}s, "
-                        f"parse: {parse_duration:.2f}s, "
-                        f"write: {write_duration:.2f}s)"
-                    )
                 except Exception as e:
                     server_logger.error(f"Error processing URL {url}: {str(e)}")
+                    self.send_headers_if_needed()
                     page_content = self.page_controller.handle_page("not-found")
                     self.wfile.write(bytes([0x00] * 12))
                     self.wfile.write(bytes([0x0D, 0x0A] * 2))
@@ -238,6 +305,7 @@ class XiinoDataServer(BaseHTTPRequestHandler):
         except Exception as e:
             server_logger.error(f"Error handling request: {str(e)}")
             try:
+                self.send_headers_if_needed()
                 page_content = self.page_controller.handle_page("not-found")
                 self.wfile.write(bytes([0x00] * 12))
                 self.wfile.write(bytes([0x0D, 0x0A] * 2))
@@ -245,6 +313,7 @@ class XiinoDataServer(BaseHTTPRequestHandler):
             except:
                 # Last resort error handling
                 server_logger.critical("Failed to serve error page")
+                self.send_headers_if_needed()
                 self.wfile.write(bytes([0x00] * 12))
                 self.wfile.write(bytes([0x0D, 0x0A] * 2))
                 self.wfile.write(iso8859("Internal Server Error"))
@@ -252,8 +321,7 @@ class XiinoDataServer(BaseHTTPRequestHandler):
     def do_GET(self):
         """Handle GET requests by dispatching to async handler"""
         self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
+        # Headers will be sent by handle_request based on content type
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

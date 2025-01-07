@@ -68,6 +68,11 @@ class PageController:
             content = self._render_github()
         elif page == 'error_toolarge':
             content = self._render_page_too_large()
+        elif page == 'image' and isinstance(request_info, dict):
+            content = self._render_image(
+                request_info.get('image_url', ''),
+                request_info.get('image_html', '')
+            )
         else:
             content = self._render_not_found()
             
@@ -122,3 +127,19 @@ class PageController:
             'title': 'Page Not Found'
         }
         return self.templates['not_found'](context)
+        
+    def _render_image(self, image_url: str, image_html: str) -> str:
+        """Render an image view page
+        
+        Args:
+            image_url: The original URL of the image
+            image_html: The HTML containing the IMG and EBDIMAGE tags
+            
+        Returns:
+            str: The rendered image page
+        """
+        context = {
+            'image_url': image_url,
+            'image_html': image_html
+        }
+        return self.templates['image'](context)
