@@ -34,8 +34,8 @@ class XiinoServer:
     SCREEN_WIDTH_REGEX = re.compile(r"\/w([0-9]*)\/")
     TXT_ENCODING_REGEX = re.compile(r"\/[de]{1,2}([a-zA-Z0-9-]*)\/")
     
-    def __init__(self):
-        self.page_controller = PageController()
+    def __init__(self, page_controller: PageController):
+        self.page_controller = page_controller
         self.next_ebd_ref = 1  # Counter for EBD references
         
     def check_rate_limit(self, ip: str) -> bool:
@@ -230,11 +230,29 @@ class XiinoServer:
 
     async def render_page(self, page: str, context: dict = None) -> web.Response:
         """Render a page template"""
-        content = self.page_controller.handle_page(page, context)
+        content = await self.page_controller.handle_page(page, context)
         return web.Response(
             body=self._create_response_body(content),
             content_type='text/html'
         )
+
+@web.middleware
+async def error_middleware(request: web.Request, handler) -> web.Response:
+    """Global error handling middleware"""
+    try:
+        return await handler(request)
+    except web.HTTPException as ex:
+        # Let aiohttp handle standard HTTP errors
+        raise
+    except ContentTooLargeError:
+        server_logger.warning("Content too large error")
+        server = request.app['server']
+        return await server.render_page("page_too_large")
+    except Exception as ex:
+        server_logger.error(f"Unhandled error: {str(ex)}")
+        server = request.app['server']
+        return await server.render_page("not-found")
+
 
     def _create_response_body(self, content: str) -> bytes:
         """Create response body with proper headers"""
@@ -243,11 +261,25 @@ class XiinoServer:
 
 async def init_app() -> web.Application:
     """Initialize the aiohttp application"""
-    app = web.Application()
-    server = XiinoServer()
+    # Create app with error middleware
+    app = web.Application(middlewares=[error_middleware])
+    
+    # Initialize controllers
+    page_controller = await PageController.create()
+    server = XiinoServer(page_controller)
+    
+    # Store controllers in app for cleanup
+    app['page_controller'] = page_controller
+    app['server'] = server
     
     # Add routes
     app.router.add_get('/', server.handle_xiino_request)
+    
+    # Setup cleanup
+    async def cleanup(app):
+        await app['page_controller'].cleanup()
+    
+    app.on_cleanup.append(cleanup)
     
     return app
 

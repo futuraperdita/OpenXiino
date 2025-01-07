@@ -7,9 +7,12 @@ import re
 import asyncio
 import time
 import os
+from typing import Union, List, Optional, Dict, Any
+from dataclasses import dataclass
 from dotenv import load_dotenv
 from lib.httpclient import fetch_binary, ContentTooLargeError
 from lib.logger import html_logger
+from lib.xiino_image_converter import EBDConverter
 
 # Load environment variables
 load_dotenv()
@@ -26,12 +29,8 @@ ALLOWED_IMAGE_MIME_TYPES = {
     'image/png;base64'  # Allow base64 encoded PNGs for tests
 }
 
-# Minimum dimensions to allow test images
-MIN_IMAGE_DIMENSIONS = (1, 1)
-
-from lib.xiino_image_converter import EBDConverter
-
-supported_tags = [
+# Supported tags by the proxy
+SUPPORTED_TAGS = [
     "A", "ADDRESS", "AREA", "B", "BASE", "BASEFONT", "BLINK", "BLOCKQUOTE",
     "BODY", "BGCOLOR", "BR", "CLEAR", "CENTER", "CAPTION", "CITE", "CODE",
     "DD", "DIR", "DIV", "DL", "DT", "FONT", "FORM", "FRAME", "FRAMESET",
@@ -43,7 +42,7 @@ supported_tags = [
 ]
 
 # Define allowed attributes and their values per tag based on Xiino spec
-allowed_attributes = {
+SUPPORTED_ATTRIBUTES = {
     "A": {"HREF", "NAME", "TARGET", "ONCLICK"},
     "AREA": {"COORDS", "HREF", "SHAPE", "TARGET", "NOHREF"},
     "BASE": {"HREF"},
@@ -80,7 +79,7 @@ allowed_attributes = {
 }
 
 # Define allowed values for specific attributes
-allowed_values = {
+ALLOWED_ATTRIBUTE_VALUES = {
     "BR.CLEAR": {"NONE", "LEFT", "RIGHT", "ALL"},
     "DIV.ALIGN": {"LEFT", "CENTER", "RIGHT"},
     "HR.ALIGN": {"LEFT", "CENTER", "RIGHT"},
@@ -99,109 +98,152 @@ allowed_values = {
     "AREA.SHAPE": {"CIRCLE", "POLY", "POLYGON", "RECT"},
 }
 
+# Minimum dimensions to allow test images
+MIN_IMAGE_DIMENSIONS = (1, 1)
+
+@dataclass
+class ImageTask:
+    """Represents an image processing task"""
+    url: str
+    buffer_index: int
+    task: asyncio.Task
+
 class XiinoHTMLParser(HTMLParser):
-    "Parse HTML to Xiino spec."
+    """Parse HTML to Xiino spec with proper async support."""
 
     def __init__(
         self,
         *,
-        base_url,
+        base_url: str,
         convert_charrefs: bool = True,
-        grayscale_depth: int | None = None,
-        cookies: dict | None = None
+        grayscale_depth: Optional[int] = None,
+        cookies: Optional[Dict[str, str]] = None
     ) -> None:
-        self.cookies = cookies  # Store cookies for image requests
-        self.image_count = 0  # Track number of images processed
+        super().__init__(convert_charrefs=convert_charrefs)
+        self.cookies = cookies or {}
+        self.image_count = 0
         self.parsing_supported_tag = True
-        self.__parsed_data_buffer = []  # List of content chunks
+        self.__parsed_data_buffer: List[str] = []
         self.base_url = base_url
         self.grayscale_depth = grayscale_depth
-        self.image_tasks = []  # Track image processing tasks
-        self.next_ebd_ref = 1  # Counter for EBD references
-        self.total_size = 0  # Track total page size in bytes
-        self.max_size = int(os.getenv('MAX_PAGE_SIZE', 100)) * 1024  # Convert KB to bytes
-        super().__init__(convert_charrefs=convert_charrefs)
+        self.image_tasks: List[ImageTask] = []
+        self.next_ebd_ref = 1
+        self.total_size = 0
+        self.max_size = int(os.getenv('MAX_PAGE_SIZE', 100)) * 1024
+        self._cleanup_required = False
 
-    def _filter_attributes(self, tag: str, attrs: list) -> list:
+    async def cleanup(self) -> None:
+        """Clean up resources"""
+        if self._cleanup_required:
+            # Cancel any pending image tasks
+            for img_task in self.image_tasks:
+                if not img_task.task.done():
+                    img_task.task.cancel()
+                    try:
+                        await img_task.task
+                    except asyncio.CancelledError:
+                        pass
+            
+            # Clear buffers
+            self.__parsed_data_buffer.clear()
+            self.image_tasks.clear()
+            self._cleanup_required = False
+
+    def _filter_attributes(self, tag: str, attrs: List[tuple]) -> List[tuple]:
         """Filter attributes based on Xiino specifications."""
-        if tag.upper() not in allowed_attributes:
+        if tag.upper() not in SUPPORTED_ATTRIBUTES:
             return []
         
-        allowed_attrs = allowed_attributes[tag.upper()]
+        allowed_attrs = SUPPORTED_ATTRIBUTES[tag.upper()]
         filtered_attrs = []
         
         for attr_name, attr_value in attrs:
             attr_name = attr_name.upper()
             if attr_name in allowed_attrs:
-                # Check if this attribute has value restrictions
                 value_key = f"{tag.upper()}.{attr_name}"
-                if value_key in allowed_values:
-                    # If the attribute value is restricted, validate it
-                    if attr_value.upper() in allowed_values[value_key]:
+                if value_key in ALLOWED_ATTRIBUTE_VALUES:
+                    if attr_value.upper() in ALLOWED_ATTRIBUTE_VALUES[value_key]:
                         filtered_attrs.append((attr_name, attr_value))
                     else:
                         html_logger.warning(f"Invalid value '{attr_value}' for attribute {attr_name} in tag {tag}")
                 else:
-                    # If no value restrictions, keep the attribute
                     filtered_attrs.append((attr_name, attr_value))
                     
         return filtered_attrs
 
-    def handle_starttag(self, tag, attrs):
-        if tag.upper() in supported_tags:
-            if tag == "img":
-                # Process image at current position
-                source_url = [attr[1] for attr in attrs if attr[0].lower() == "src"]
-                if source_url:
-                    true_url = source_url[0]
-                    # Create placeholder for image content
-                    placeholder_index = len(self.__parsed_data_buffer)
-                    self.__parsed_data_buffer.append("")
-                    # Create and track image processing task
-                    task = asyncio.create_task(self.parse_image(true_url, placeholder_index))
-                    self.image_tasks.append(task)
+    def handle_starttag(self, tag: str, attrs: List[tuple]) -> None:
+        """Handle HTML start tags with proper error handling"""
+        try:
+            if tag.upper() in SUPPORTED_TAGS:
+                if tag == "img":
+                    self._handle_img_tag(attrs)
                 else:
-                    html_logger.warning(f"IMG with no SRC at {self.base_url}")
-                    self.__parsed_data_buffer.append("<p>[Missing image source]</p>\n")
+                    self._handle_regular_tag(tag, attrs)
             else:
-                if tag == "a":
-                    # fix up links for poor little browser
-                    new_attrs = []
-                    for attr in attrs:
-                        if attr[0] == "href":
-                            new_url = urljoin(self.base_url, attr[1])
-                            if new_url.startswith("https:"):
-                                new_url = new_url.replace("https:", "http:", 1)
-                            new_attrs.append(("href", str(new_url)))
-                        else:
-                            new_attrs.append(attr)
-                    attrs = new_attrs
+                self.parsing_supported_tag = False
+        except Exception as e:
+            html_logger.error(f"Error handling start tag {tag}: {str(e)}")
+            raise
 
-                self.parsing_supported_tag = True
-                tag_str = f"<{tag.upper()}"
-                
-                # Filter attributes according to Xiino spec
-                filtered_attrs = self._filter_attributes(tag, attrs)
-                if filtered_attrs:
-                    tag_str += " " + " ".join(
-                        f'{x[0].upper()}="{x[1]}"' for x in filtered_attrs
-                    )
-                tag_str += ">\n"
-                
-                # Check size with new tag
-                new_size = len(tag_str.encode('utf-8'))
-                if self.total_size + new_size > self.max_size:
-                    html_logger.warning("Total page size would exceed limit")
-                    raise ContentTooLargeError()
-                self.total_size += new_size
-                self.__parsed_data_buffer.append(tag_str)
+    def _handle_img_tag(self, attrs: List[tuple]) -> None:
+        """Handle IMG tag processing"""
+        source_url = next((attr[1] for attr in attrs if attr[0].lower() == "src"), None)
+        if source_url:
+            placeholder_index = len(self.__parsed_data_buffer)
+            self.__parsed_data_buffer.append("")
+            
+            # Create and track image processing task
+            task = asyncio.create_task(self.parse_image(source_url, placeholder_index))
+            self.image_tasks.append(ImageTask(source_url, placeholder_index, task))
+            self._cleanup_required = True
         else:
-            self.parsing_supported_tag = False
+            html_logger.warning(f"IMG with no SRC at {self.base_url}")
+            self.__parsed_data_buffer.append("<p>[Missing image source]</p>\n")
 
-    def handle_data(self, data):
+    def _handle_regular_tag(self, tag: str, attrs: List[tuple]) -> None:
+        """Handle non-IMG tag processing"""
+        if tag == "a":
+            attrs = self._fix_link_urls(attrs)
+
+        self.parsing_supported_tag = True
+        tag_str = self._build_tag_string(tag, attrs)
+        
+        new_size = len(tag_str.encode('utf-8'))
+        if self.total_size + new_size > self.max_size:
+            html_logger.warning("Total page size would exceed limit")
+            raise ContentTooLargeError()
+            
+        self.total_size += new_size
+        self.__parsed_data_buffer.append(tag_str)
+
+    def _fix_link_urls(self, attrs: List[tuple]) -> List[tuple]:
+        """Fix URLs in link tags"""
+        new_attrs = []
+        for attr_name, attr_value in attrs:
+            if attr_name == "href":
+                new_url = urljoin(self.base_url, attr_value)
+                if new_url.startswith("https:"):
+                    new_url = new_url.replace("https:", "http:", 1)
+                new_attrs.append(("href", str(new_url)))
+            else:
+                new_attrs.append((attr_name, attr_value))
+        return new_attrs
+
+    def _build_tag_string(self, tag: str, attrs: List[tuple]) -> str:
+        """Build HTML tag string with attributes"""
+        tag_str = f"<{tag.upper()}"
+        filtered_attrs = self._filter_attributes(tag, attrs)
+        if filtered_attrs:
+            tag_str += " " + " ".join(
+                f'{x[0].upper()}="{x[1]}"' for x in filtered_attrs
+            )
+        return tag_str + ">\n"
+
+    def handle_data(self, data: str) -> None:
+        """Handle text content"""
         if self.parsing_supported_tag:
             content = data.strip()
-            if len(content) > 0:
+            if content:
                 content_with_newline = content + "\n"
                 new_size = len(content_with_newline.encode('utf-8'))
                 if self.total_size + new_size > self.max_size:
@@ -210,8 +252,9 @@ class XiinoHTMLParser(HTMLParser):
                 self.total_size += new_size
                 self.__parsed_data_buffer.append(content_with_newline)
 
-    def handle_endtag(self, tag):
-        if tag.upper() in supported_tags:
+    def handle_endtag(self, tag: str) -> None:
+        """Handle HTML end tags"""
+        if tag.upper() in SUPPORTED_TAGS:
             end_tag = f"</{tag.upper()}>\n"
             new_size = len(end_tag.encode('utf-8'))
             if self.total_size + new_size > self.max_size:
@@ -223,7 +266,6 @@ class XiinoHTMLParser(HTMLParser):
     def validate_image_url(self, url: str) -> bool:
         """Validate image URL for security"""
         if url.startswith('data:'):
-            # Validate data URL format and size
             try:
                 header, b64data = url.split(',', 1)
                 if not header.startswith('data:image/'):
@@ -233,7 +275,6 @@ class XiinoHTMLParser(HTMLParser):
                 if not mime_type or mime_type.group(1) not in ALLOWED_IMAGE_MIME_TYPES:
                     return False
                     
-                # Check data URL size
                 if len(b64data) > MAX_DATA_URL_SIZE:
                     return False
                     
@@ -241,162 +282,145 @@ class XiinoHTMLParser(HTMLParser):
             except:
                 return False
         else:
-            # Validate regular URLs
-            # Allow relative URLs (starting with /) and absolute URLs
             if url.startswith('/'):
                 return True
             parsed = urlparse(url)
             return bool(parsed.scheme in ('http', 'https') and parsed.netloc)
 
-    async def parse_image(self, url: str, buffer_index: int):
+    async def parse_image(self, url: str, buffer_index: int) -> None:
+        """Process a single image asynchronously"""
         start_time = time.time()
         html_logger.debug(f"Starting image processing for: {url}")
-        # Check image count limit
-        if self.image_count >= MAX_IMAGES_PER_PAGE:
-            html_logger.warning(f"Too many images on page: {url}")
-            self.__parsed_data_buffer[buffer_index] = "<p>[Image limit exceeded]</p>\n"
-            return
-            
-        # Validate URL
-        if not self.validate_image_url(url):
-            html_logger.warning(f"Invalid image URL: {url}")
-            self.__parsed_data_buffer[buffer_index] = "<p>[Invalid image URL]</p>\n"
-            return
-
+        
         try:
+            if self.image_count >= MAX_IMAGES_PER_PAGE:
+                html_logger.warning(f"Too many images on page: {url}")
+                self.__parsed_data_buffer[buffer_index] = "<p>[Image limit exceeded]</p>\n"
+                return
+                
+            if not self.validate_image_url(url):
+                html_logger.warning(f"Invalid image URL: {url}")
+                self.__parsed_data_buffer[buffer_index] = "<p>[Invalid image URL]</p>\n"
+                return
+
             async with asyncio.timeout(IMAGE_PROCESSING_TIMEOUT):
-                if url.startswith('data:'):
-                    try:
-                        # Split into metadata and base64 content
-                        header, base64_data = url.split(',', 1)
-                        # Check if this is an SVG
-                        if 'svg+xml' in header.lower():
-                            # Decode SVG XML and pass directly to EBDConverter
-                            svg_content = base64.b64decode(base64_data).decode('utf-8')
-                            image_buffer = svg_content
-                        else:
-                            # Create buffer directly from base64 data for other formats
-                            image_buffer = BytesIO()
-                            image_buffer.write(base64.b64decode(base64_data))
-                            image_buffer.seek(0)
-                            
-                            # Check size before processing
-                            if image_buffer.getbuffer().nbytes > MAX_IMAGE_SIZE:
-                                html_logger.warning(f"Image too large: {url}")
-                                self.__parsed_data_buffer[buffer_index] = "<p>[Image too large]</p>\n"
-                                return
-                    except Exception as e:
-                        html_logger.warning(f"Failed to decode data: URL - {str(e)}")
-                        self.__parsed_data_buffer[buffer_index] = "<p>[Invalid data: URL image]</p>\n"
-                        return
-                else:
-                    # Handle regular URLs
-                    full_url = urljoin(self.base_url, url)
-                    # Fetch image data asynchronously
-                    image_data, response_cookies = await fetch_binary(full_url, cookies=self.cookies)
-                    
-                    # Check size before processing
-                    if len(image_data) > MAX_IMAGE_SIZE:
-                        html_logger.warning(f"Image too large: {url}")
-                        self.__parsed_data_buffer[buffer_index] = "<p>[Image too large]</p>\n"
-                        return
-                        
-                    image_buffer = BytesIO(image_data)
-
-                try:
-                    # Check if content is SVG
-                    is_svg = False
-                    if isinstance(image_buffer, str):  # Already SVG content from data URL
-                        is_svg = True
-                        svg_content = image_buffer
-                    else:
-                        # Try to detect SVG from content
-                        peek = image_buffer.read(1000).decode('utf-8', errors='ignore')
-                        image_buffer.seek(0)
-                        is_svg = '<svg' in peek.lower()
-                        
-                    if is_svg:
-                        # For SVG, pass content directly to EBDConverter
-                        if not isinstance(image_buffer, str):
-                            svg_content = image_buffer.read().decode('utf-8')
-                            image_buffer.seek(0)
-                        convert_start = time.time()
-                        ebd_converter = EBDConverter(svg_content)
-                    else:
-                        # For non-SVG images, use PIL
-                        image = Image.open(image_buffer)
-                        
-                        # Validate image dimensions
-                        if image.width > MAX_IMAGE_DIMENSIONS[0] or image.height > MAX_IMAGE_DIMENSIONS[1]:
-                            html_logger.warning(f"Image dimensions too large: {url}")
-                            self.__parsed_data_buffer[buffer_index] = "<p>[Image dimensions too large]</p>\n"
-                            image_buffer.close()
-                            return
-                            
-                        # pre-filter images
-                        if (image.width / 2 < MIN_IMAGE_DIMENSIONS[0] or 
-                            image.height / 2 < MIN_IMAGE_DIMENSIONS[1]):
-                            html_logger.warning(f"Image too small at {url}")
-                            self.__parsed_data_buffer[buffer_index] = "<p>[Small image]</p>\n"
-                            return
-
-                        convert_start = time.time()
-                        ebd_converter = EBDConverter(image)
-                    await ebd_converter._ensure_initialized()
-
-                    html_logger.debug("Starting EBD conversion")
-                    if self.grayscale_depth:
-                        image_data = await ebd_converter.convert_gs(depth=self.grayscale_depth, compressed=True)
-                    else:
-                        image_data = await ebd_converter.convert_colour(compressed=True)
-
-                    ebd_ref = self.next_ebd_ref
-                    self.next_ebd_ref += 1
-                    
-                    # Generate image tags and check total size
-                    img_tag = image_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
-                    ebd_tag = image_data.generate_ebdimage_tag(name=ebd_ref) + "\n"
-                    
-                    # Calculate size of HTML tags and EBD data
-                    new_size = len(img_tag.encode('utf-8')) + len(ebd_tag.encode('utf-8')) + len(image_data.raw_data)
-                    
-                    # Check if adding this image would exceed size limit
-                    if self.total_size + new_size > self.max_size:
-                        html_logger.warning(f"Total page size would exceed limit with EBD image: {url}")
-                        image_buffer.close()
-                        # Don't set buffer - let the error propagate up
-                        raise ContentTooLargeError()
-                    
-                    # Update total size and buffer
-                    self.total_size += new_size
-                    self.__parsed_data_buffer[buffer_index] = img_tag + ebd_tag
-                    image_buffer.close()
-                    
-                    # Increment image count
-                    self.image_count += 1
-                    
-                    convert_duration = time.time() - convert_start
-                    total_duration = time.time() - start_time
-                    html_logger.debug(
-                        f"Image processing completed in {total_duration:.2f}s "
-                        f"(conversion: {convert_duration:.2f}s)"
-                    )
-                    
-                except UnidentifiedImageError as exception_info:
-                    html_logger.warning(f"Unsupported image format at {url}: {exception_info.args[0]}")
-                    self.__parsed_data_buffer[buffer_index] = "<p>[Unsupported image]</p>\n"
-                    image_buffer.close()
+                await self._process_image(url, buffer_index, start_time)
                 
         except asyncio.TimeoutError:
             html_logger.warning(f"Image processing timeout: {url}")
             self.__parsed_data_buffer[buffer_index] = "<p>[Image processing timeout]</p>\n"
         except ContentTooLargeError:
-            raise  # Re-raise to propagate up
+            raise
         except Exception as e:
             html_logger.error(f"Error processing image {url}: {str(e)}")
             self.__parsed_data_buffer[buffer_index] = "<p>[Image processing error]</p>\n"
 
-    async def feed_async(self, data: str):
+    async def _process_image(self, url: str, buffer_index: int, start_time: float) -> None:
+        """Internal image processing logic"""
+        try:
+            image_buffer = await self._get_image_buffer(url)
+            if isinstance(image_buffer, str):
+                is_svg = True
+                svg_content = image_buffer
+            else:
+                is_svg = await self._check_svg_content(image_buffer)
+                
+            converter = await self._create_converter(image_buffer, is_svg)
+            await converter._ensure_initialized()
+            
+            ebd_data = await self._convert_image(converter)
+            await self._handle_converted_image(ebd_data, url, buffer_index, start_time)
+            
+        except Exception as e:
+            html_logger.error(f"Image processing failed: {str(e)}")
+            raise
+
+    async def _get_image_buffer(self, url: str) -> Union[str, BytesIO]:
+        """Get image buffer from URL or data URL"""
+        if url.startswith('data:'):
+            return await self._handle_data_url(url)
+        else:
+            return await self._fetch_image(url)
+
+    async def _handle_data_url(self, url: str) -> Union[str, BytesIO]:
+        """Handle data URL image content"""
+        header, base64_data = url.split(',', 1)
+        if 'svg+xml' in header.lower():
+            return base64.b64decode(base64_data).decode('utf-8')
+        else:
+            buffer = BytesIO(base64.b64decode(base64_data))
+            if buffer.getbuffer().nbytes > MAX_IMAGE_SIZE:
+                raise ContentTooLargeError()
+            return buffer
+
+    async def _fetch_image(self, url: str) -> BytesIO:
+        """Fetch image from URL"""
+        full_url = urljoin(self.base_url, url)
+        image_data, _ = await fetch_binary(full_url, cookies=self.cookies)
+        
+        if len(image_data) > MAX_IMAGE_SIZE:
+            raise ContentTooLargeError()
+            
+        return BytesIO(image_data)
+
+    async def _check_svg_content(self, buffer: BytesIO) -> bool:
+        """Check if content is SVG"""
+        peek = buffer.read(1000).decode('utf-8', errors='ignore')
+        buffer.seek(0)
+        return '<svg' in peek.lower()
+
+    async def _create_converter(self, buffer: Union[str, BytesIO], is_svg: bool) -> EBDConverter:
+        """Create appropriate converter for image type"""
+        if is_svg:
+            if isinstance(buffer, BytesIO):
+                svg_content = buffer.read().decode('utf-8')
+                buffer.seek(0)
+            else:
+                svg_content = buffer
+            return EBDConverter(svg_content)
+        else:
+            image = Image.open(buffer)
+            if not self._validate_image_dimensions(image):
+                raise ValueError("Invalid image dimensions")
+            return EBDConverter(image)
+
+    def _validate_image_dimensions(self, image: Image.Image) -> bool:
+        """Validate image dimensions"""
+        if (image.width > MAX_IMAGE_DIMENSIONS[0] or 
+            image.height > MAX_IMAGE_DIMENSIONS[1] or
+            image.width / 2 < MIN_IMAGE_DIMENSIONS[0] or 
+            image.height / 2 < MIN_IMAGE_DIMENSIONS[1]):
+            return False
+        return True
+
+    async def _convert_image(self, converter: EBDConverter) -> Any:
+        """Convert image to EBD format"""
+        if self.grayscale_depth:
+            return await converter.convert_gs(depth=self.grayscale_depth, compressed=True)
+        else:
+            return await converter.convert_colour(compressed=True)
+
+    async def _handle_converted_image(self, ebd_data: Any, url: str, buffer_index: int, start_time: float) -> None:
+        """Handle converted image data"""
+        ebd_ref = self.next_ebd_ref
+        self.next_ebd_ref += 1
+        
+        img_tag = ebd_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
+        ebd_tag = ebd_data.generate_ebdimage_tag(name=ebd_ref) + "\n"
+        
+        new_size = len(img_tag.encode('utf-8')) + len(ebd_tag.encode('utf-8')) + len(ebd_data.raw_data)
+        if self.total_size + new_size > self.max_size:
+            raise ContentTooLargeError()
+        
+        self.total_size += new_size
+        self.__parsed_data_buffer[buffer_index] = img_tag + ebd_tag
+        self.image_count += 1
+        
+        html_logger.debug(
+            f"Image processing completed in {time.time() - start_time:.2f}s"
+        )
+
+    async def feed_async(self, data: str) -> None:
         """Asynchronously feed data to the parser."""
         start_time = time.time()
         html_logger.debug("Starting HTML parsing")
@@ -406,28 +430,23 @@ class XiinoHTMLParser(HTMLParser):
             parse_duration = time.time() - start_time
             html_logger.debug(f"HTML parsing completed in {parse_duration:.2f}s")
             
-            # Wait for all image processing to complete
             if self.image_tasks:
-                html_logger.debug(f"Waiting for {len(self.image_tasks)} images to process")
+                html_logger.debug(f"Processing {len(self.image_tasks)} images")
                 try:
-                    await asyncio.gather(*self.image_tasks)
+                    await asyncio.gather(*(task.task for task in self.image_tasks))
                 except ContentTooLargeError:
-                    # Clear any partial processing
-                    self.__parsed_data_buffer = []
-                    self.image_tasks = []
+                    await self.cleanup()
                     raise
             
             total_duration = time.time() - start_time
-            html_logger.debug(f"Total feed_async processing completed in {total_duration:.2f}s")
-        except ContentTooLargeError:
-            # Clear any partial processing
-            self.__parsed_data_buffer = []
-            self.image_tasks = []
+            html_logger.debug(f"Total processing completed in {total_duration:.2f}s")
+        except Exception:
+            await self.cleanup()
             raise
 
-    def get_parsed_data(self):
-        """Get the parsed data from the buffer, then clear it."""
-        data = "".join(self.__parsed_data_buffer)
-        self.__parsed_data_buffer = []
-        self.image_tasks = []
-        return data
+    def get_parsed_data(self) -> str:
+        """Get the parsed data and clean up."""
+        try:
+            return "".join(self.__parsed_data_buffer)
+        finally:
+            self._cleanup_required = True
