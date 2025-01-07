@@ -15,7 +15,6 @@ import numpy as np
 # Security constants
 MAX_SVG_SIZE = 1024 * 1024  # 1MB max SVG size
 SVG_PROCESSING_TIMEOUT = 5  # 5 second timeout for SVG processing
-MAX_PALETTE_OPERATIONS = 500000  # Limit color matching operations
 
 import lib.scanline as scanline
 import lib.mode9 as mode9
@@ -304,9 +303,6 @@ class EBDConverter:
         # Get image data as numpy array
         pixels = np.array(self.image, dtype=np.float32)
         total_pixels = pixels.shape[0] * pixels.shape[1]
-        
-        if total_pixels * len(PALETTE) > MAX_PALETTE_OPERATIONS:
-            raise ValueError("Image processing exceeded operation limit")
         
         # Reshape to 2D array of pixels
         pixels = pixels.reshape(-1, 3)
