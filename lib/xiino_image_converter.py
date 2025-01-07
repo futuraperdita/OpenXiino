@@ -12,9 +12,10 @@ import asyncio
 from typing import Union, Optional, List, Tuple, Dict, Any
 import numpy as np
 
-# Security constants
-MAX_SVG_SIZE = 1024 * 1024  # 1MB max SVG size
-SVG_PROCESSING_TIMEOUT = 5  # 5 second timeout for SVG processing
+# Security constants from environment
+MAX_SVG_SIZE = int(os.getenv('IMAGE_MAX_SVG_SIZE', '1')) * 1024 * 1024  # Convert MB to bytes
+SVG_PROCESSING_TIMEOUT = int(os.getenv('IMAGE_SVG_TIMEOUT', '5'))
+MAX_IMAGE_PIXELS = int(os.getenv('IMAGE_MAX_PIXELS', '1000000'))
 
 import lib.scanline as scanline
 import lib.mode9 as mode9
@@ -141,13 +142,13 @@ class EBDConverter:
                 else:
                     # Open regular image file with size validation
                     image = PIL.Image.open(self._image)
-                    if image.width * image.height > 1000000:
+                    if image.width * image.height > MAX_IMAGE_PIXELS:
                         raise ValueError("Image dimensions too large")
             else:
                 image = self._image
 
             # Check image dimensions before any scaling
-            if image.width * image.height > 1000000:
+            if image.width * image.height > MAX_IMAGE_PIXELS:
                 raise ValueError("Image dimensions too large")
 
             # Apply Xiino's scaling requirements

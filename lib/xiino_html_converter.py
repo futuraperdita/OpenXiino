@@ -18,13 +18,13 @@ from lib.xiino_image_converter import EBDConverter
 # Load environment variables
 load_dotenv()
 
-# Security constants
-# TODO: abstract all to .env
-MAX_IMAGE_SIZE = 1024 * 1024 * 5  # 5MB max image size
-MAX_IMAGE_DIMENSIONS = (2048, 2048)  # Max width/height
-MAX_IMAGES_PER_PAGE = 100  # Maximum number of images per page
-IMAGE_PROCESSING_TIMEOUT = int(os.getenv('IMAGE_PROCESSING_TIMEOUT', '30'))  # Timeout in seconds for image processing
-MAX_DATA_URL_SIZE = 1024 * 1024  # 1MB max for data URLs
+# Image processing configuration from environment
+MAX_IMAGE_SIZE = int(os.getenv('IMAGE_MAX_SIZE', '5')) * 1024 * 1024  # Convert MB to bytes
+MAX_IMAGE_DIMENSION = int(os.getenv('IMAGE_MAX_DIMENSION', '2048'))
+MAX_IMAGE_DIMENSIONS = (MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION)  # Max width/height
+MAX_IMAGES_PER_PAGE = int(os.getenv('IMAGE_MAX_PER_PAGE', '100'))
+IMAGE_PROCESSING_TIMEOUT = int(os.getenv('IMAGE_PROCESSING_TIMEOUT', '30'))
+MAX_DATA_URL_SIZE = int(os.getenv('IMAGE_MAX_DATA_URL_SIZE', '1')) * 1024 * 1024  # Convert MB to bytes
 ALLOWED_IMAGE_MIME_TYPES = {
     'image/jpeg', 'image/png', 'image/gif', 
     'image/svg+xml', 'image/webp',
@@ -131,7 +131,7 @@ class XiinoHTMLParser(HTMLParser):
         self.image_tasks: List[ImageTask] = []
         self.next_ebd_ref = 1
         self.total_size = 0
-        self.max_size = int(os.getenv('MAX_PAGE_SIZE', 100)) * 1024
+        self.max_size = int(os.getenv('HTTP_MAX_PAGE_SIZE', 512)) * 1024  # Convert KB to bytes
         self._cleanup_required = False
 
     async def cleanup(self) -> None:

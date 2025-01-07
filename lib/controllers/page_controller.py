@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-MAX_PAGE_SIZE = int(os.getenv('MAX_PAGE_SIZE', 100))  # Default to 100KB if not set
+MAX_PAGE_SIZE = int(os.getenv('HTTP_MAX_PAGE_SIZE', 512))  # Default to 512KB if not set
 
 class PageController:
     """Controller for handling page routes and rendering templates"""

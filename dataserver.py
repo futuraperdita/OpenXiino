@@ -17,9 +17,9 @@ from lib.xiino_image_converter import EBDConverter
 load_dotenv()
 setup_logging()
 
-# Security constants
-MAX_REQUEST_SIZE = 1024 * 1024 * 10  # 10MB max request size
-MAX_REQUESTS_PER_MIN = 60  # Rate limit per IP
+# Security configuration from environment
+MAX_REQUEST_SIZE = int(os.getenv("SECURITY_MAX_REQUEST_SIZE", "10")) * 1024 * 1024  # Convert MB to bytes
+MAX_REQUESTS_PER_MIN = int(os.getenv("SECURITY_MAX_REQUESTS_PER_MIN", "60"))
 REQUEST_TRACKING = {}  # Track requests per IP
 
 def iso8859(string: str) -> bytes:

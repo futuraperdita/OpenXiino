@@ -10,15 +10,19 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-DEFAULT_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "5"))
+DEFAULT_TIMEOUT = float(os.getenv("HTTP_TIMEOUT", "5"))
 DEFAULT_USER_AGENT = os.getenv(
-    "USER_AGENT",
+    "HTTP_USER_AGENT",
     "Mozilla/1.22 (compatible; MSIE 5.01; PalmOS 3.0) OpenXiino/1.0; 160x160"
 )
-MAX_PAGE_SIZE = int(os.getenv('MAX_PAGE_SIZE', 100)) * 1024  # Convert KB to bytes
+MAX_PAGE_SIZE = int(os.getenv('HTTP_MAX_PAGE_SIZE', 100)) * 1024  # Convert KB to bytes
 
-# Configure SOCKS5 proxy if available
-PROXY_URL = os.getenv('SOCKS5_PROXY')
+# Security settings
+MAX_REDIRECTS = int(os.getenv('SECURITY_MAX_REDIRECTS', '10'))
+ALLOW_REDIRECTS = os.getenv('SECURITY_ALLOW_REDIRECTS', 'true').lower() == 'true'
+
+# Configure SOCKS proxy if available
+PROXY_URL = os.getenv('HTTP_SOCKS_PROXY')
 if PROXY_URL:
     proxy_parts = urlparse(PROXY_URL)
     if not proxy_parts.port:
@@ -60,8 +64,8 @@ async def fetch(
             headers=headers,
             cookies=cookies,
             timeout=timeout_value,
-            allow_redirects=True,  # Explicitly enable redirects (including HTTP->HTTPS)
-            max_redirects=10
+            allow_redirects=ALLOW_REDIRECTS,  # Controlled by SECURITY_ALLOW_REDIRECTS
+            max_redirects=MAX_REDIRECTS
         ) as response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Connection upgraded to HTTPS: {response.url}")
@@ -135,8 +139,8 @@ async def post(
             cookies=cookies,
             data=data,
             timeout=timeout_value,
-            allow_redirects=True,
-            max_redirects=10
+            allow_redirects=ALLOW_REDIRECTS,
+            max_redirects=MAX_REDIRECTS
         ) as response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Connection upgraded to HTTPS: {response.url}")
@@ -203,8 +207,8 @@ async def fetch_binary(
             headers=headers,
             cookies=cookies,
             timeout=timeout_value,
-            allow_redirects=True,  # Explicitly enable redirects (including HTTP->HTTPS)
-            max_redirects=10
+            allow_redirects=ALLOW_REDIRECTS,  # Controlled by SECURITY_ALLOW_REDIRECTS
+            max_redirects=MAX_REDIRECTS
         ) as response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Binary fetch connection upgraded to HTTPS: {response.url}")
