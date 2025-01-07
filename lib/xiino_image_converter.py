@@ -10,6 +10,7 @@ import io
 import asyncio
 from typing import Union, Optional, List, Tuple, Dict, Any
 from concurrent.futures import ThreadPoolExecutor
+import numpy as np
 
 # Security constants
 MAX_SVG_SIZE = 1024 * 1024  # 1MB max SVG size
@@ -228,17 +229,19 @@ class EBDConverter:
         return EBDImage(data, width=self.image.width, height=self.image.height, mode=8)
 
     def _convert_mode0(self) -> bytes:
-        """Convert to mode0 (one-bit, no compression)."""
-        buf = []
-        im_bw = self.image.convert("1")
-        for y in range(0, self.image.height):
-            row_data = [im_bw.getpixel((x, y)) for x in range(0, self.image.width)]
-            for chunk in self._divide_chunks(row_data, 8):
-                binary = bitstring.BitArray(bin="0b00000000")
-                for index, pixel in enumerate(chunk):
-                    binary.set(not pixel, index)
-                buf.append(binary.uint)
-        return bytes(buf)
+        """Convert to mode0 (one-bit, no compression) using numpy."""
+        # Convert to binary image and get numpy array
+        im_bw = np.array(self.image.convert("1"), dtype=np.bool_)
+        
+        # Pad width to multiple of 8 for byte alignment
+        pad_width = (8 - (im_bw.shape[1] % 8)) % 8
+        if pad_width:
+            im_bw = np.pad(im_bw, ((0, 0), (0, pad_width)), mode='constant', constant_values=0)
+        
+        # Reshape to group bits into bytes (8 pixels per byte)
+        bits = np.packbits(~im_bw, axis=1)
+        
+        return bytes(bits.flatten())
 
     def _convert_mode1(self) -> bytes:
         """Convert to mode1 (one-bit, scanline compression)."""
@@ -246,17 +249,26 @@ class EBDConverter:
         return scanline.compress_data_with_scanline(self._convert_mode0(), width_bytes)
 
     def _convert_mode2(self) -> bytes:
-        """Convert to uncompressed two-bit grey."""
-        buf = []
-        im_gs = PIL.ImageOps.invert(self.image.convert("L"))
-        for y in range(0, self.image.height):
-            raw_data = [im_gs.getpixel((x, y)) for x in range(0, self.image.width)]
-            for chunk in self._divide_chunks(raw_data, 4):
-                byte = 0
-                for i, val in enumerate(reversed(chunk)):
-                    byte |= (math.floor(val / 64) << (i * 2))
-                buf.append(byte)
-        return bytes(buf)
+        """Convert to uncompressed two-bit grey using numpy."""
+        # Convert to grayscale and invert
+        im_gs = np.array(PIL.ImageOps.invert(self.image.convert("L")), dtype=np.uint8)
+        
+        # Quantize to 2 bits (4 levels)
+        quantized = np.clip(im_gs // 64, 0, 3)
+        
+        # Pad width to multiple of 4 for byte alignment
+        pad_width = (4 - (quantized.shape[1] % 4)) % 4
+        if pad_width:
+            quantized = np.pad(quantized, ((0, 0), (0, pad_width)), mode='constant')
+        
+        # Pack 4 2-bit values into each byte
+        packed = np.zeros(quantized.shape[0] * ((quantized.shape[1] + 3) // 4), dtype=np.uint8)
+        for i in range(4):
+            shift = 6 - (i * 2)
+            mask = (quantized[:, i::4].flatten()[:len(packed)] << shift)
+            packed |= mask
+            
+        return bytes(packed)
 
     def _convert_mode3(self) -> bytes:
         """Convert to Scanline compressed two-bit grey."""
@@ -264,16 +276,23 @@ class EBDConverter:
         return scanline.compress_data_with_scanline(self._convert_mode2(), width_bytes)
 
     def _convert_mode4(self) -> bytes:
-        """Convert to uncompressed four-bit grey."""
-        buf = []
-        im_gs = PIL.ImageOps.invert(self.image.convert("L"))
-        for y in range(0, self.image.height):
-            raw_data = [im_gs.getpixel((x, y)) for x in range(0, self.image.width)]
-            for chunk in self._divide_chunks(raw_data, 2):
-                val1 = min(15, round(chunk[0] / 16))
-                val2 = 0 if len(chunk) < 2 else min(15, round(chunk[1] / 16))
-                buf.append((val1 << 4) | val2)
-        return bytes(buf)
+        """Convert to uncompressed four-bit grey using numpy."""
+        # Convert to grayscale and invert
+        im_gs = np.array(PIL.ImageOps.invert(self.image.convert("L")), dtype=np.uint8)
+        
+        # Quantize to 4 bits (16 levels)
+        quantized = np.clip(np.round(im_gs / 16), 0, 15).astype(np.uint8)
+        
+        # Pad width to multiple of 2 for byte alignment
+        if quantized.shape[1] % 2:
+            quantized = np.pad(quantized, ((0, 0), (0, 1)), mode='constant')
+        
+        # Pack pairs of 4-bit values into bytes
+        high = quantized[:, ::2] << 4
+        low = quantized[:, 1::2]
+        packed = high | low
+        
+        return bytes(packed.flatten())
 
     def _convert_mode5(self) -> bytes:
         """Convert to Scanline compressed four-bit grey."""
@@ -281,38 +300,29 @@ class EBDConverter:
         return scanline.compress_data_with_scanline(self._convert_mode4(), width_bytes)
 
     def _convert_mode8(self) -> bytes:
-        """Convert to 8-bit color with operation limits and optimizations."""
-        buf = bytearray()
-        pixel_count = 0
-        palette_cache: Dict[int, int] = {}
+        """Convert to 8-bit color using vectorized numpy operations."""
+        # Get image data as numpy array
+        pixels = np.array(self.image, dtype=np.float32)
+        total_pixels = pixels.shape[0] * pixels.shape[1]
         
-        for px in self.image.getdata():
-            pixel_count += 1
-            if pixel_count * len(PALETTE) > MAX_PALETTE_OPERATIONS:
-                raise ValueError("Image processing exceeded operation limit")
-                
-            px_key = hash(px)
-            if px_key in palette_cache:
-                buf.append(palette_cache[px_key])
-                continue
-                
-            r, g, b = px
-            min_distance = float('inf')
-            best_index = 0xE6
-            
-            for i, (pr, pg, pb) in enumerate(PALETTE):
-                distance = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
-                if distance < min_distance:
-                    min_distance = distance
-                    best_index = i
-                    
-            palette_cache[px_key] = best_index
-            buf.append(best_index)
-            
-            if len(palette_cache) > 1000:
-                palette_cache.clear()
-                
-        return buf
+        if total_pixels * len(PALETTE) > MAX_PALETTE_OPERATIONS:
+            raise ValueError("Image processing exceeded operation limit")
+        
+        # Reshape to 2D array of pixels
+        pixels = pixels.reshape(-1, 3)
+        
+        # Convert palette to numpy array
+        palette = np.array(PALETTE, dtype=np.float32)
+        
+        # Calculate distances to all palette colors at once
+        # Use broadcasting to compute differences
+        diff = pixels[:, np.newaxis] - palette
+        distances = np.sum(diff * diff, axis=2)
+        
+        # Find closest palette color for each pixel
+        indices = np.argmin(distances, axis=1)
+        
+        return bytes(indices)
 
     @staticmethod
     def _divide_chunks(l: List[Any], n: int) -> List[Any]:

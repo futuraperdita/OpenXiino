@@ -1,115 +1,93 @@
 """
 Experimental Scanline image compressor.
 Based on the implementation by Palm, Inc.
+Optimized using numpy for better performance.
 """
-# pylint: disable=pointless-statement
+import numpy as np
+from typing import Optional
 
 
 def compress_scanline(
     line: bytes,
-    prev_line: bytes | None,
-    first_line: bool,
+    prev_line: Optional[bytes] = None,
+    first_line: bool = False,
 ) -> bytes:
     """
-    Compress a single line of a bitmap using Scanline compression.
-    If this is not compressing the first line,
-    the current line and previous line must be of equal length.
-    (This should be true for sane images).
-    If not, the function will throw an AssertionError.
-
-    :param line: The data for the current line.
-    :param prev_line: The data for the previous line.
-    :param first_line: True if this is the first line of the image, otherwise false
+    Compress a single line of a bitmap using Scanline compression with numpy optimization.
+    
+    :param line: The data for the current line
+    :param prev_line: The data for the previous line
+    :param first_line: True if this is the first line of the image
     """
+    # Convert input to numpy arrays for vectorized operations
+    line_arr = np.frombuffer(line, dtype=np.uint8)
     if not first_line:
-        assert len(line) <= len(
-            prev_line
-        ), "Mismatched lines passed to compress_scanline"
-    width = len(line) - 8  # mimic C behaviour
-
+        if prev_line is None or len(prev_line) < len(line):
+            raise ValueError("Mismatched lines passed to compress_scanline")
+        prev_arr = np.frombuffer(prev_line, dtype=np.uint8)
+    
     buffer = bytearray()
-
-    line_index = 0
-
+    
     if first_line:
-        while width >= 0:
-            buffer.append(0xFF)  # all bytes change on the first row
-            buffer.extend(line[line_index : line_index + 8])
-            line_index += 8
-            width -= 8
-
-        width += 8
-        if width > 0:
-            # "finish off any stragglers"
-            # making a pre-emptive guess here, and truncating
-            # header byte at 8 bits. happy to be proven wrong
-            buffer.append(0xFF << (8 - width) & 0xFF)
-            buffer.extend(line[line_index : line_index + width])
-            line_index += width
-
-    else:  # not the first line
-        while width >= 0:  # process eight bytes at a time
-            flags = 0x00
-            changed_bytes_buffer = bytearray()
-
-            for _ in range(0, 8):
-                flags << 1
-                if line[line_index] != prev_line[line_index]:
-                    flags += 1
-                    changed_bytes_buffer.append(line[line_index])
-                line_index += 1
-
-            assert flags < 0x100, "Flag assignment has gone wrong, check your logic"
+        # Process first line in chunks of 8 bytes
+        for i in range(0, len(line_arr) - 8, 8):
+            buffer.append(0xFF)  # all bytes change on first row
+            buffer.extend(line_arr[i:i+8].tobytes())
+        
+        # Handle remaining bytes
+        remaining = len(line_arr) % 8
+        if remaining > 0:
+            buffer.append(0xFF << (8 - remaining) & 0xFF)
+            buffer.extend(line_arr[-remaining:].tobytes())
+    
+    else:
+        # Process subsequent lines in chunks of 8 bytes
+        for i in range(0, len(line_arr) - 8, 8):
+            # Compare 8 bytes at once
+            chunk_line = line_arr[i:i+8]
+            chunk_prev = prev_arr[i:i+8]
+            
+            # Find changed bytes using vectorized comparison
+            changes = chunk_line != chunk_prev
+            flags = np.packbits(changes)[0]
+            
+            # Add changed bytes to buffer
             buffer.append(flags)
-            buffer.extend(changed_bytes_buffer)
-            width -= 8
-
-        width += 8
-        if width > 0:
-            # damn stragglers
-            flags = 0x00
-            changed_bytes_buffer = bytearray()
-            for _ in range(0, width):
-                flags << 1
-                if line[line_index] != prev_line[line_index]:
-                    flags += 1
-                    changed_bytes_buffer.append(line[line_index])
-                line_index += 1
-            # pad flags byte
-            flags = flags << (8 - width)
-
-            assert flags < 0x100, "Flag assignment has gone wrong, check your logic"
+            buffer.extend(chunk_line[changes].tobytes())
+        
+        # Handle remaining bytes
+        remaining = len(line_arr) % 8
+        if remaining > 0:
+            chunk_line = line_arr[-remaining:]
+            chunk_prev = prev_arr[-remaining:]
+            
+            changes = chunk_line != chunk_prev
+            flags = np.packbits(np.pad(changes, (0, 8-remaining), 'constant'))[0]
+            
             buffer.append(flags)
-            buffer.extend(changed_bytes_buffer)
-
+            buffer.extend(chunk_line[changes].tobytes())
+    
     return bytes(buffer)
 
 
 def compress_data_with_scanline(data: bytes, width: int) -> bytes:
     """
-    Helpful wrapper to compress a block of data with Scanline,
-    instead of one line at a time.
-
-    :param data: Image data.
-    :param width: Width of one row of the image, in bytes.
+    Compress a block of data with Scanline using numpy optimization.
+    
+    :param data: Image data
+    :param width: Width of one row of the image, in bytes
     """
+    # Convert input to numpy array and reshape into rows
+    data_arr = np.frombuffer(data, dtype=np.uint8)
+    rows = data_arr.reshape(-1, width)
+    
     buffer = bytearray()
-
-    # assert (
-    #     len(data) % width == 0
-    # ), f"Invalid width {width} for data of length {len(data)}"
-    lines = list(__divide_chunks(data, width))
-
-    for index, line in enumerate(lines):
-        if index == 0:
-            buffer.extend(compress_scanline(line, None, True))
-        else:
-            buffer.extend(compress_scanline(line, lines[index - 1], False))
-
-    return buffer
-
-
-def __divide_chunks(l, n: int):
-    "Helper function for splitting things into chunks"
-    for i in range(0, len(l), n):
-        yield l[i : i + n]
+    
+    # Process first row
+    buffer.extend(compress_scanline(rows[0].tobytes(), None, True))
+    
+    # Process subsequent rows
+    for i in range(1, len(rows)):
+        buffer.extend(compress_scanline(rows[i].tobytes(), rows[i-1].tobytes(), False))
+    
+    return bytes(buffer)
