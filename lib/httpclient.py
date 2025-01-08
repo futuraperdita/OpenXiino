@@ -43,13 +43,15 @@ class ContentTooLargeError(Exception):
     """Raised when content exceeds maximum size limit"""
     pass
 
-async def try_https_upgrade(url: str, session: aiohttp.ClientSession, **kwargs) -> Optional[aiohttp.ClientResponse]:
+async def try_https_upgrade(url: str, session: aiohttp.ClientSession, **kwargs) -> Tuple[bool, Optional[aiohttp.ClientResponse]]:
     """
     Attempt to upgrade an HTTP connection to HTTPS.
-    Returns the response if successful, None if upgrade failed.
+    Returns (attempted, response) tuple where:
+    - attempted: boolean indicating if upgrade was attempted
+    - response: ClientResponse if successful, None if upgrade failed or wasn't attempted
     """
     if not ATTEMPT_HTTPS_UPGRADE or url.startswith('https://'):
-        return None
+        return False, None
         
     # Try direct HTTPS
     https_url = urlunparse(urlparse(url)._replace(scheme='https'))
@@ -62,19 +64,18 @@ async def try_https_upgrade(url: str, session: aiohttp.ClientSession, **kwargs) 
         })
         kwargs['headers'] = headers
         
-        response = await session.get(https_url, ssl=ssl_context, **kwargs)
-        if response.status == 101:  # Switching Protocols
-            server_logger.debug("Successfully upgraded to HTTPS via HTTP/1.1 Upgrade")
-            return response
-        elif response.status < 400:
-            server_logger.debug("Successfully connected via direct HTTPS")
-            return response
-        else:
-            await response.close()
-            return None
+        async with session.get(https_url, ssl=ssl_context, **kwargs) as response:
+            if response.status == 101:  # Switching Protocols
+                server_logger.debug("Successfully upgraded to HTTPS via HTTP/1.1 Upgrade")
+                return True, response
+            elif response.status < 400:
+                server_logger.debug("Successfully connected via direct HTTPS")
+                return True, response
+            else:
+                return True, None
     except (aiohttp.ClientError, ssl.SSLError) as e:
         server_logger.debug(f"HTTPS upgrade attempt failed: {str(e)}")
-        return None
+        return True, None
 
 async def fetch(
     url: str,
@@ -107,11 +108,11 @@ async def fetch(
             'max_redirects': MAX_REDIRECTS
         }
         
-        upgraded_response = await try_https_upgrade(url, session, **kwargs)
-        if upgraded_response:
+        attempted_upgrade, upgraded_response = await try_https_upgrade(url, session, **kwargs)
+        if attempted_upgrade and upgraded_response:
             response = upgraded_response
         else:
-            # Fall back to original HTTP request if upgrade fails
+            # Either upgrade wasn't attempted or it failed
             response = await session.get(url, **kwargs)
             
         async with response:
@@ -191,11 +192,11 @@ async def post(
             'max_redirects': MAX_REDIRECTS
         }
         
-        upgraded_response = await try_https_upgrade(url, session, **kwargs)
-        if upgraded_response:
+        attempted_upgrade, upgraded_response = await try_https_upgrade(url, session, **kwargs)
+        if attempted_upgrade and upgraded_response:
             response = upgraded_response
         else:
-            # Fall back to original HTTP request if upgrade fails
+            # Either upgrade wasn't attempted or it failed
             response = await session.post(url, **kwargs)
             
         async with response:
@@ -268,11 +269,11 @@ async def fetch_binary(
             'max_redirects': MAX_REDIRECTS
         }
         
-        upgraded_response = await try_https_upgrade(url, session, **kwargs)
-        if upgraded_response:
+        attempted_upgrade, upgraded_response = await try_https_upgrade(url, session, **kwargs)
+        if attempted_upgrade and upgraded_response:
             response = upgraded_response
         else:
-            # Fall back to original HTTP request if upgrade fails
+            # Either upgrade wasn't attempted or it failed
             response = await session.get(url, **kwargs)
             
         async with response:

@@ -33,6 +33,7 @@ class XiinoServer:
     GSCALE_DEPTH_REGEX = re.compile(r"\/g([0-9]*)\/")
     SCREEN_WIDTH_REGEX = re.compile(r"\/w([0-9]*)\/")
     TXT_ENCODING_REGEX = re.compile(r"\/[de]{1,2}([a-zA-Z0-9-]*)\/")
+    URL_REGEX = re.compile(r"\?(.+?)(?:/?\s|$)")  # Extract URL from query string, handling device parameters and trailing slash
     
     def __init__(self, page_controller: PageController):
         self.page_controller = page_controller
@@ -59,7 +60,7 @@ class XiinoServer:
     def validate_url(self, url: str) -> bool:
         """Validate URL for security"""
         parsed = urlparse(url)
-        if not parsed.scheme == 'http':
+        if parsed.scheme not in ('http', 'https'):
             return False
         if not parsed.netloc:
             return False
@@ -74,10 +75,15 @@ class XiinoServer:
         if self.check_rate_limit(request.remote):
             raise web.HTTPTooManyRequests(text="Too many requests")
             
-        # Get URL from query string
-        url = request.query.get('url')
-        if not url:
+        # Extract URL from request path using regex
+        server_logger.debug(f"Extracting URL from path: {request.raw_path}")
+        url_match = self.URL_REGEX.search(request.raw_path)
+        if not url_match:
+            server_logger.error(f"No URL found in request path: {request.path_qs}")
             return await self.render_page("error_404")
+            
+        url = url_match.group(1)
+        server_logger.debug(f"Extracted URL: {url}")
 
         # Handle xiino URLs and validate
         if not self.validate_url(url):
@@ -101,7 +107,7 @@ class XiinoServer:
             )
             
             # Parse response HTML
-            gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.path_qs)
+            gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.raw_path)
             grayscale_depth = int(gscale_depth) if gscale_depth else None
             
             parser = XiinoHTMLParser(
@@ -137,16 +143,24 @@ class XiinoServer:
     async def handle_xiino_request(self, request: web.Request) -> web.Response:
         """Main request handler for Xiino browser requests"""
         request_start = time.time()
-        server_logger.debug(f"Starting request handling for {request.path_qs}")
+        server_logger.debug(f"Starting request handling")
+        server_logger.debug(f"Path: {request.path}")
+        server_logger.debug(f"Path with query string: {request.path_qs}")
+        server_logger.debug(f"Raw path: {request.raw_path}")
         
         # Check rate limit
         if self.check_rate_limit(request.remote):
             raise web.HTTPTooManyRequests(text="Too many requests")
             
-        # Get URL from query string
-        url = request.query.get('url')
-        if not url:
+        # Extract URL from request path using regex
+        server_logger.debug(f"Extracting URL from path: {request.raw_path}")
+        url_match = self.URL_REGEX.search(request.raw_path)
+        if not url_match:
+            server_logger.error(f"No URL found in request path: {request.path_qs}")
             return await self.render_page("error_404")
+            
+        url = url_match.group(1)
+        server_logger.debug(f"Extracted URL: {url}")
 
         # Handle xiino URLs and validate
         if not self.validate_url(url):
@@ -176,14 +190,17 @@ class XiinoServer:
 
     def get_device_info(self, request: web.Request) -> dict:
         """Extract device info from request path"""
-        path = request.path_qs
-        return {
+        path = request.raw_path
+        server_logger.debug(f"Getting device info from path: {path}")
+        info = {
             "color_depth": self._get_regex_group(self.COLOUR_DEPTH_REGEX, path),
             "grayscale_depth": self._get_regex_group(self.GSCALE_DEPTH_REGEX, path),
             "screen_width": self._get_regex_group(self.SCREEN_WIDTH_REGEX, path),
             "encoding": self._get_regex_group(self.TXT_ENCODING_REGEX, path),
             "headers": str(request.headers)
         }
+        server_logger.debug(f"Extracted device info: {info}")
+        return info
 
     def _get_regex_group(self, regex: re.Pattern, text: str) -> str:
         """Helper to safely get regex group"""
@@ -236,7 +253,7 @@ class XiinoServer:
         await converter._ensure_initialized()
         
         # Convert to EBD format
-        gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.path_qs)
+        gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.raw_path)
         if gscale_depth:
             ebd_data = await converter.convert_gs(depth=int(gscale_depth), compressed=True)
         else:
@@ -270,7 +287,7 @@ class XiinoServer:
         server_logger.debug(f"URL fetch completed in {fetch_duration:.2f}s")
         
         # Parse HTML
-        gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.path_qs)
+        gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.raw_path)
         grayscale_depth = int(gscale_depth) if gscale_depth else None
         
         parser = XiinoHTMLParser(
@@ -314,9 +331,14 @@ class XiinoServer:
 async def error_middleware(request: web.Request, handler) -> web.Response:
     """Global error handling middleware"""
     try:
-        return await handler(request)
+        server_logger.debug(f"Processing request in middleware: {request.path_qs}")
+        response = await handler(request)
+        server_logger.debug(f"Handler completed with status: {response.status}")
+        return response
     except web.HTTPException as ex:
         server_logger.warning(f"HTTP error {ex.status}: {str(ex)}")
+        server_logger.debug(f"Request path: {request.path_qs}")
+        server_logger.debug(f"Raw path: {request.raw_path}")
         server = request.app['server']
         return await server.render_page(f"error_{ex.status}")
     except ContentTooLargeError:
@@ -333,20 +355,23 @@ async def error_middleware(request: web.Request, handler) -> web.Response:
 
 async def init_app() -> web.Application:
     """Initialize the aiohttp application"""
-    # Create app with error middleware
-    app = web.Application(middlewares=[error_middleware])
-    
     # Initialize controllers
     page_controller = await PageController.create()
     server = XiinoServer(page_controller)
     
+    # Create app with routes first
+    app = web.Application()
+    app.router.add_routes([
+        web.get('/{tail:.*}', server.handle_xiino_request),
+        web.post('/{tail:.*}', server.handle_xiino_post)
+    ])
+    
+    # Then add middleware
+    app.middlewares.append(error_middleware)
+    
     # Store controllers in app for cleanup
     app['page_controller'] = page_controller
     app['server'] = server
-    
-    # Add routes
-    app.router.add_get('/', server.handle_xiino_request)
-    app.router.add_post('/', server.handle_xiino_post)
     
     # Setup cleanup
     async def cleanup(app):
