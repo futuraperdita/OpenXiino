@@ -123,6 +123,8 @@ class PageController:
             content = await self._render_about()
         elif page == 'device':
             content = await self._render_device_info(request_info)
+        elif page == 'credits':
+            content = await self._render_credits()
         elif page == 'error_toolarge':
             content = await self._render_page_too_large()
         elif page == 'image' and isinstance(request_info, dict):
@@ -173,6 +175,14 @@ class PageController:
             }
         }
         return await asyncio.to_thread(self.templates['about'], context)
+    
+    async def _render_credits(self) -> str:
+        """Render the thanks page"""
+        html_logger.debug("Rendering thanks page")
+        context = {
+            'title': 'Credits'
+        }
+        return await asyncio.to_thread(self.templates['credits'], context)
     
     async def _render_device_info(self, request_info: Optional[dict]) -> str:
         """Render the device info page"""
