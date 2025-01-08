@@ -2,7 +2,7 @@
 
 > **Note:** This is a working development fork and should be considered highly unstable. Use [nicl83/OpenXiino](https://github.com/nicl83/OpenXiino) if you're not looking to explore something very new. **Absolutely no support** will be given for this fork until it reaches stability and use in its parent project.
 
-This repository contains a heavily modified, **very work-in-progress** fork of nicl83's [OpenXiino](https://github.com/nicl83/OpenXiino) rewrite of the Palmscape/Xiino "DataServer", which will eventually be used in an unreleased project.
+This repository contains a heavily modified, **very work-in-progress** fork of nicl83's [OpenXiino](https://github.com/nicl83/OpenXiino) rewrite of the Palmscape/Xiino "DataServer".
 
 ## Why is this necessary?
 
@@ -44,7 +44,7 @@ _Developer Tools_:
 - Python-standard logging functionality
 - Fully configurable via environment variables
 
-The end result is to try to build an OpenXiino that is a little more "production-grade", such that it could be run as a service for a small PalmOS community.
+The end result is to try to build an OpenXiino that is a little more "production-grade", such that it could be run as a service for a small PalmOS community. I am writing it for a specific, as-yet-undisclosed project, and got a little obsessed when I started my refactor to where it's ended up looking like this in a few days' time.
 
 **Note that JavaScript of any type is still not supported.** The JavaScript implementation of Xiino is basically DHTML-level and is too small for the majority of reason to support JS today, which is for single-page applications written in major frameworks such as React. It's best to think of OpenXiino as a minimal translation layer on already relatively minimal pages. You can use it as a modern TLS-capable proxy to browse the now mostly-HTTPS web without having to worry about the obsolete SSL stack built into Xiino.
 
