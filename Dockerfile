@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     python3-dev \
     build-essential \
+    libssl-dev \
     libffi-dev \
     libcairo2 \
     libcairo2-dev \
