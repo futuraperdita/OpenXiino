@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   pull_request:
@@ -28,7 +28,10 @@ jobs:
             libfreetype6-dev \
             libwebp-dev \
             libtiff5-dev \
-            zlib1g-dev
+            zlib1g-dev \
+            build-essential \
+            libssl-dev \
+            libffi-dev
 
       - name: Install Python dependencies
         run: |
