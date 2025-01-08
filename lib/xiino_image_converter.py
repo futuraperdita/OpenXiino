@@ -102,6 +102,7 @@ class EBDConverter:
         try:
             # Extract original dimensions
             orig_width, orig_height = self.__extract_svg_dimensions(svg_content)
+            image_logger.debug(f"SVG dimensions: {orig_width}x{orig_height} (from {'file' if is_file else 'content'})")
             
             # Direct synchronous conversion at original size
             png_data = cairosvg.svg2png(
@@ -122,8 +123,10 @@ class EBDConverter:
         """Initialize the converter asynchronously."""
         try:
             if isinstance(self._image, str):
+                image_logger.debug("Processing image from string input")
                 # Process SVG with security checks
                 if self._image.lower().endswith('.svg') or '<svg' in self._image[:1000].lower():
+                    image_logger.debug("Detected SVG content")
                     # Check SVG size before processing
                     svg_content = self._image
                     if not self._image.lower().endswith('.svg'):
@@ -142,10 +145,12 @@ class EBDConverter:
                 else:
                     # Open regular image file with size validation
                     image = PIL.Image.open(self._image)
+                    image_logger.debug(f"Opened image file: format={image.format}, mode={image.mode}, size={image.width}x{image.height}")
                     if image.width * image.height > MAX_IMAGE_PIXELS:
                         raise ValueError("Image dimensions too large")
             else:
                 image = self._image
+                image_logger.debug(f"Processing PIL Image object: mode={image.mode}, size={image.width}x{image.height}")
 
             # Check image dimensions before any scaling
             if image.width * image.height > MAX_IMAGE_PIXELS:
@@ -174,12 +179,15 @@ class EBDConverter:
             try:
                 # Convert palette images with transparency to RGBA first
                 if image.mode == "P" and image.info.get("transparency") is not None:
+                    image_logger.debug("Converting palette image with transparency to RGBA")
                     image = image.convert("RGBA")
                 
                 if image.mode == "RGBA":
+                    image_logger.debug("Compositing RGBA image with white background")
                     background = PIL.Image.new("RGBA", image.size, (255, 255, 255))
                     self.image = PIL.Image.alpha_composite(background, image).convert("RGB")
                 else:
+                    image_logger.debug(f"Converting {image.mode} image to RGB")
                     self.image = image.convert("RGB")
             except ValueError as e:
                 image_logger.error(f"Image composite failed for size {image.size}")
@@ -194,6 +202,7 @@ class EBDConverter:
         """Convert the image to black and white (1-bit)."""
         if not self.image:
             await self._initialize()
+        image_logger.debug(f"Converting to B&W (mode={1 if compressed else 0})")
         if compressed:
             data = self._convert_mode1()
             return EBDImage(data, width=self.image.width, height=self.image.height, mode=1)
@@ -204,6 +213,7 @@ class EBDConverter:
         """Convert the image to greyscale."""
         if not self.image:
             await self._initialize()
+        image_logger.debug(f"Converting to grayscale (depth={depth}-bit, mode={3 if compressed and depth == 2 else 2 if depth == 2 else 4 if compressed else 5})")
         if depth == 2:
             if compressed:
                 data = self._convert_mode3()
@@ -223,6 +233,7 @@ class EBDConverter:
         """Convert the image to 8-bit (231 colour)."""
         if not self.image:
             await self._initialize()
+        image_logger.debug(f"Converting to 8-bit color (mode={9 if compressed else 8})")
         if compressed:
             data = mode9.compress_mode9(self.image)
             return EBDImage(data, width=self.image.width, height=self.image.height, mode=9)
@@ -231,6 +242,7 @@ class EBDConverter:
 
     def _convert_mode0(self) -> bytes:
         """Convert to mode0 (one-bit, no compression) using numpy."""
+        image_logger.debug("Converting to mode0 (1-bit B&W, uncompressed)")
         # Convert to binary image and get numpy array
         im_bw = np.array(self.image.convert("1"), dtype=np.bool_)
         
@@ -246,15 +258,19 @@ class EBDConverter:
 
     def _convert_mode1(self) -> bytes:
         """Convert to mode1 (one-bit, scanline compression)."""
+        image_logger.debug("Converting to mode1 (1-bit B&W, scanline compressed)")
         width_bytes = math.ceil(self.image.width / 8)  # 8 pixels per byte for black and white
+        image_logger.debug(f"Width in bytes: {width_bytes} (8 pixels per byte)")
         return scanline.compress_data_with_scanline(self._convert_mode0(), width_bytes)
 
     def _convert_mode2(self) -> bytes:
         """Convert to uncompressed two-bit grey using numpy."""
-        # Convert to grayscale and invert
-        im_gs = np.array(PIL.ImageOps.invert(self.image.convert("L")), dtype=np.uint8)
+        image_logger.debug("Converting to mode2 (2-bit grayscale, uncompressed)")
+        # Convert to grayscale
+        im_gs = np.array(self.image.convert("L"), dtype=np.uint8)
         
         # Apply dithering with 4 levels (2 bits)
+        image_logger.debug("Applying dithering with 4 grayscale levels")
         _, quantized = apply_dithering(
             im_gs,
             lambda x: find_closest_gray(x, 4),
@@ -277,15 +293,19 @@ class EBDConverter:
 
     def _convert_mode3(self) -> bytes:
         """Convert to Scanline compressed two-bit grey."""
+        image_logger.debug("Converting to mode3 (2-bit grayscale, scanline compressed)")
         width_bytes = math.ceil(self.image.width / 2)
+        image_logger.debug(f"Width in bytes: {width_bytes} (4 pixels per byte)")
         return scanline.compress_data_with_scanline(self._convert_mode2(), width_bytes)
 
     def _convert_mode4(self) -> bytes:
         """Convert to uncompressed four-bit grey using numpy."""
-        # Convert to grayscale and invert
-        im_gs = np.array(PIL.ImageOps.invert(self.image.convert("L")), dtype=np.uint8)
+        image_logger.debug("Converting to mode4 (4-bit grayscale, uncompressed)")
+        # Convert to grayscale
+        im_gs = np.array(self.image.convert("L"), dtype=np.uint8)
         
         # Apply dithering with 16 levels (4 bits)
+        image_logger.debug("Applying dithering with 16 grayscale levels")
         _, quantized = apply_dithering(
             im_gs,
             lambda x: find_closest_gray(x, 16),
@@ -305,15 +325,19 @@ class EBDConverter:
 
     def _convert_mode5(self) -> bytes:
         """Convert to Scanline compressed four-bit grey."""
+        image_logger.debug("Converting to mode5 (4-bit grayscale, scanline compressed)")
         width_bytes = math.ceil(self.image.width / 4)
+        image_logger.debug(f"Width in bytes: {width_bytes} (2 pixels per byte)")
         return scanline.compress_data_with_scanline(self._convert_mode4(), width_bytes)
 
     def _convert_mode8(self) -> bytes:
         """Convert to 8-bit color using vectorized numpy operations."""
+        image_logger.debug("Converting to mode8 (8-bit color, uncompressed)")
         # Get image data as numpy array
         pixels = np.array(self.image, dtype=np.float32)
         
         # Apply dithering and get indices
+        image_logger.debug("Applying dithering with 231-color palette")
         _, indices = apply_dithering(pixels, find_closest_color, palette_array=PALETTE_ARRAY)
         
         return bytes(indices.flatten())

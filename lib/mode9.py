@@ -4,6 +4,7 @@ import numpy as np
 from lib.ebd_control_codes import CONTROL_CODES
 from lib.color_matching import find_closest_color
 from lib.dithering import apply_dithering
+from lib.logger import image_logger
 
 def compress_mode9(image: PIL.Image.Image):
     """
@@ -13,9 +14,11 @@ def compress_mode9(image: PIL.Image.Image):
     # Convert to RGB and get numpy array
     image = image.convert("RGB")
     width, height = image.size
+    image_logger.debug(f"Mode9 compression starting: {width}x{height} pixels")
     data = np.array(image, dtype=np.float32)
     
     # Apply dithering and get processed data and indices
+    image_logger.debug("Applying dithering with 231-color palette")
     processed_data, indices = apply_dithering(data, find_closest_color)
     
     # Process image in rows for compression
@@ -23,12 +26,20 @@ def compress_mode9(image: PIL.Image.Image):
     buffer = bytearray()
     
     # Compress rows
+    image_logger.debug(f"Compressing {len(rows)} rows")
     for index, row in enumerate(rows):
         if index == 0:
-            buffer.extend(compress_line(row, None, True))
+            row_data = compress_line(row, None, True)
         else:
-            buffer.extend(compress_line(row, rows[index - 1], False))
+            row_data = compress_line(row, rows[index - 1], False)
+        buffer.extend(row_data)
+        if index % 10 == 0:  # Log progress every 10 rows
+            image_logger.debug(f"Compressed {index}/{len(rows)} rows")
     
+    compressed_size = len(buffer)
+    original_size = width * height
+    ratio = compressed_size / original_size * 100
+    image_logger.debug(f"Mode9 compression complete: {original_size} -> {compressed_size} bytes ({ratio:.1f}%)")
     return bytes(buffer)
 
 def compress_line(line: np.ndarray, prev_line: np.ndarray | None, first_line: bool):
@@ -87,6 +98,8 @@ def compress_line(line: np.ndarray, prev_line: np.ndarray | None, first_line: bo
             remaining = line[index:]
             matches = np.all(remaining == curr_pixel, axis=1)
             rle_length = np.argmin(matches) if not np.all(matches) else len(matches)
+            if rle_length > 5:  # Log significant RLE opportunities
+                image_logger.debug(f"Found RLE sequence length {rle_length} at index {index}")
         
         # Compare compression methods
         compare_dict = {
@@ -117,6 +130,9 @@ def compress_line(line: np.ndarray, prev_line: np.ndarray | None, first_line: bo
         else:
             length = compare_dict[best_compression]
             offset = {"lb_-1": -1, "lb_0": 0, "lb_1": 1}[best_compression]
+            
+            if length > 10:  # Log significant pattern matches
+                image_logger.debug(f"Found pattern match length {length} with offset {offset} at index {index}")
             
             if 1 <= length <= 5:
                 buffer.append(CONTROL_CODES[f"COPY_{int(length)}_OFFSET_{offset}"])

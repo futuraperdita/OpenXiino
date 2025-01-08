@@ -16,11 +16,11 @@ def setup_logging():
     )
     
     # Configure root logger
-    logger = logging.getLogger()
-    logger.setLevel(log_level)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
     
     # Remove any existing handlers
-    logger.handlers = []
+    root_logger.handlers = []
     
     if log_path:
         # Ensure log directory exists
@@ -39,9 +39,28 @@ def setup_logging():
         handler = logging.StreamHandler(sys.stderr)
     
     handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    root_logger.addHandler(handler)
 
-# Create module-level loggers
+# Create module-level loggers and ensure they inherit from root
 server_logger = logging.getLogger('server')
 html_logger = logging.getLogger('html_converter')
 image_logger = logging.getLogger('image_converter')
+color_logger = logging.getLogger('color_matching')
+dither_logger = logging.getLogger('dithering')
+scanline_logger = logging.getLogger('scanline')
+mode9_logger = logging.getLogger('mode9')
+
+# Ensure all our loggers propagate to root and don't filter
+LOGGERS = [
+    server_logger,
+    html_logger,
+    image_logger,
+    color_logger,
+    dither_logger,
+    scanline_logger,
+    mode9_logger
+]
+
+for logger in LOGGERS:
+    logger.propagate = True
+    logger.setLevel(logging.NOTSET)  # Use root logger's level

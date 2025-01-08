@@ -2,6 +2,7 @@
 import numpy as np
 from typing import Tuple
 from lib.xiino_palette_common import PALETTE
+from lib.logger import image_logger
 
 def rgb_to_lab_vectorized(rgb):
     """
@@ -56,6 +57,8 @@ def rgb_to_lab_vectorized(rgb):
 
 def create_gray_palette(levels: int) -> np.ndarray:
     """Create a grayscale palette with perceptually uniform steps in LAB space."""
+    image_logger.debug(f"Creating {levels}-level grayscale palette")
+    
     # Create evenly spaced L values (perceptual brightness)
     l_values = np.linspace(0, 100, levels)
     # Create LAB colors with a=b=0 (neutral gray)
@@ -75,6 +78,7 @@ def create_gray_palette(levels: int) -> np.ndarray:
         ])))
         rgb_colors[i] = np.clip(rgb * 255, 0, 255)
     
+    image_logger.debug(f"Created grayscale palette with {levels} levels")
     return rgb_colors
 
 # Pre-compute palette arrays for color and grayscale matching
@@ -93,6 +97,9 @@ def find_closest_color(pixels: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     if pixels.ndim == 1:
         pixels = pixels.reshape(1, 3)
     
+    num_pixels = len(pixels)
+    image_logger.debug(f"Finding closest colors for {num_pixels} pixels")
+    
     # Convert input pixels to LAB
     pixels_lab = rgb_to_lab_vectorized(pixels)
     
@@ -109,6 +116,12 @@ def find_closest_color(pixels: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     selected_colors = PALETTE_ARRAY[indices]
     errors = pixels - selected_colors
     
+    # Calculate error statistics
+    avg_error = np.abs(errors).mean()
+    max_error = np.abs(errors).max()
+    unique_colors = len(np.unique(indices))
+    image_logger.debug(f"Color quantization: avg error={avg_error:.2f}, max error={max_error:.2f}, unique colors={unique_colors}")
+    
     return indices, errors
 
 def find_closest_gray(pixels: np.ndarray, levels: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -121,8 +134,12 @@ def find_closest_gray(pixels: np.ndarray, levels: int) -> Tuple[np.ndarray, np.n
     if pixels.ndim == 1:
         pixels = pixels.reshape(-1, 1)
     
+    num_pixels = len(pixels)
+    image_logger.debug(f"Finding closest {levels}-level grayscale values for {num_pixels} pixels")
+    
     # Convert RGB to LAB if needed
     if len(pixels.shape) > 1 and pixels.shape[-1] == 3:
+        image_logger.debug("Converting RGB input to LAB space")
         pixels_lab = rgb_to_lab_vectorized(pixels)
         # Use only L component (perceived lightness)
         pixels = pixels_lab[:, 0]  # L ranges from 0 to 100
@@ -146,6 +163,12 @@ def find_closest_gray(pixels: np.ndarray, levels: int) -> Tuple[np.ndarray, np.n
     # Calculate errors in LAB space for better perceptual accuracy
     selected_l = gray_palette_lab[indices]
     errors = pixels.flatten() - selected_l
+    
+    # Calculate error statistics
+    avg_error = np.abs(errors).mean()
+    max_error = np.abs(errors).max()
+    unique_levels = len(np.unique(indices))
+    image_logger.debug(f"Grayscale quantization: avg error={avg_error:.2f}, max error={max_error:.2f}, unique levels={unique_levels}/{levels}")
     
     # Invert indices for Xiino's format (0 = white, max = black)
     quantized = ((levels - 1) - indices).astype(np.uint8)

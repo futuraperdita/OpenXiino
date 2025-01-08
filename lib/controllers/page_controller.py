@@ -3,6 +3,7 @@ import os
 import asyncio
 from typing import Dict, Optional
 from dotenv import load_dotenv
+from lib.logger import html_logger
 
 # Load environment variables
 load_dotenv()
@@ -19,6 +20,7 @@ class PageController:
     @classmethod
     async def create(cls) -> 'PageController':
         """Async factory method for creating PageController instance"""
+        html_logger.debug("Creating PageController instance")
         controller = cls()
         await controller._initialize()
         return controller
@@ -26,6 +28,7 @@ class PageController:
     async def _initialize(self) -> None:
         """Initialize the controller asynchronously"""
         if not self._initialized:
+            html_logger.debug("Initializing PageController")
             await self._load_templates()
             self._initialized = True
 
@@ -47,23 +50,27 @@ class PageController:
     async def _load_templates(self) -> None:
         """Load and compile all handlebars templates asynchronously"""
         template_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'templates')
+        html_logger.debug(f"Loading templates from: {template_dir}")
         template_tasks = []
         
         for template_file in os.listdir(template_dir):
             if template_file.endswith('.hbs'):
                 template_path = os.path.join(template_dir, template_file)
                 template_name = os.path.splitext(template_file)[0]
+                html_logger.debug(f"Found template: {template_name}")
                 # Create task for loading template
                 task = asyncio.create_task(self._load_and_compile_template(template_name, template_path))
                 template_tasks.append(task)
                 
         # Wait for all templates to load
         await asyncio.gather(*template_tasks)
+        html_logger.debug(f"Loaded {len(self.templates)} templates")
     
     async def _load_and_compile_template(self, name: str, path: str) -> None:
         """Load and compile a single template"""
         content = await asyncio.to_thread(self._load_template_file, path)
         self.templates[name] = self.compiler.compile(content)
+        html_logger.debug(f"Compiled template: {name}")
     
     def _check_content_size(self, content: str) -> bool:
         """Check if content size exceeds the maximum allowed size
@@ -75,10 +82,12 @@ class PageController:
             bool: True if content is within size limit, False otherwise
         """
         content_size_kb = len(content.encode('utf-8')) / 1024
+        html_logger.debug(f"Content size: {content_size_kb:.1f}KB (limit: {MAX_PAGE_SIZE}KB)")
         return content_size_kb <= MAX_PAGE_SIZE
     
     def _render_page_too_large(self) -> str:
         """Render the page too large error page"""
+        html_logger.debug("Rendering 'page too large' error")
         context = {
             'title': 'Page Too Large',
             'max_size': MAX_PAGE_SIZE
@@ -100,8 +109,11 @@ class PageController:
 
     async def handle_page(self, page: str, request_info: Optional[dict] = None) -> str:
         """Handle page requests asynchronously"""
+        html_logger.debug(f"Handling page request: {page}")
+        
         # Ensure initialization
         if not self._initialized:
+            html_logger.debug("Controller not initialized, initializing now")
             await self._initialize()
             
         # First render the requested page
@@ -109,12 +121,8 @@ class PageController:
 
         if page == 'home':
             content = await self._render_about()
-        elif page == 'more':
-            content = await self._render_more_info()
         elif page == 'device':
             content = await self._render_device_info(request_info)
-        elif page == 'github':
-            content = await self._render_github()
         elif page == 'error_toolarge':
             content = await self._render_page_too_large()
         elif page == 'image' and isinstance(request_info, dict):
@@ -127,8 +135,10 @@ class PageController:
                 status_code = int(page.split('_')[1])
                 content = await self._render_http_error(status_code)
             except (ValueError, IndexError):
+                html_logger.warning(f"Invalid error page requested: {page}")
                 content = await self._render_http_error(404)
         else:
+            html_logger.warning(f"Unknown page requested: {page}")
             content = await self._render_http_error(404)
             
         return content
@@ -142,6 +152,7 @@ class PageController:
         Returns:
             str: The rendered error page
         """
+        html_logger.debug(f"Rendering HTTP error page for status code: {status_code}")
         title, message = self.HTTP_STATUS_MESSAGES.get(status_code, ('Error', 'An unknown error occurred.'))
         context = {
             'title': title,
@@ -151,6 +162,7 @@ class PageController:
     
     async def _render_about(self) -> str:
         """Render the about page"""
+        html_logger.debug("Rendering about page")
         context = {
             'title': 'About OpenXiino',
             'logo': {
@@ -164,6 +176,7 @@ class PageController:
     
     async def _render_device_info(self, request_info: Optional[dict]) -> str:
         """Render the device info page"""
+        html_logger.debug("Rendering device info page")
         if not request_info:
             request_info = {}
             
@@ -175,6 +188,7 @@ class PageController:
             'encoding': request_info.get('encoding'),
             'headers': request_info.get('headers', '')
         }
+        html_logger.debug(f"Device info: color={context['color_depth']}, grayscale={context['grayscale_depth']}, width={context['screen_width']}")
         helpers = {'gt': self._gt}
         return await asyncio.to_thread(self.templates['device_info'], context, helpers=helpers)
         
@@ -188,6 +202,7 @@ class PageController:
         Returns:
             str: The rendered image page
         """
+        html_logger.debug(f"Rendering image page for URL: {image_url}")
         context = {
             'image_url': image_url,
             'image_html': image_html
@@ -196,5 +211,6 @@ class PageController:
 
     async def cleanup(self) -> None:
         """Cleanup resources"""
+        html_logger.debug("Cleaning up PageController resources")
         self.templates.clear()
         self._initialized = False

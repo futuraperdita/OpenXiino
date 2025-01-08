@@ -273,27 +273,36 @@ class XiinoHTMLParser(HTMLParser):
 
     def validate_image_url(self, url: str) -> bool:
         """Validate image URL for security"""
+        html_logger.debug(f"Validating image URL: {url[:100]}...")
         if url.startswith('data:'):
             try:
                 header, b64data = url.split(',', 1)
                 if not header.startswith('data:image/'):
+                    html_logger.debug("Invalid data URL: not an image")
                     return False
                     
                 mime_type = re.match(r'data:(image/[^;,]+)', header)
                 if not mime_type or mime_type.group(1) not in ALLOWED_IMAGE_MIME_TYPES:
+                    html_logger.debug(f"Invalid data URL: mime type {mime_type.group(1) if mime_type else 'unknown'} not allowed")
                     return False
                     
                 if len(b64data) > MAX_DATA_URL_SIZE:
+                    html_logger.debug(f"Data URL too large: {len(b64data)} bytes")
                     return False
                     
+                html_logger.debug(f"Valid data URL with mime type: {mime_type.group(1) if mime_type else 'unknown'}")
                 return True
-            except:
+            except Exception as e:
+                html_logger.debug(f"Data URL parsing failed: {str(e)}")
                 return False
         else:
             if url.startswith('/'):
+                html_logger.debug("Relative URL (starts with /)")
                 return True
             parsed = urlparse(url)
-            return bool(parsed.scheme in ('http', 'https') and parsed.netloc)
+            is_valid = bool(parsed.scheme in ('http', 'https') and parsed.netloc)
+            html_logger.debug(f"URL validation result: scheme={parsed.scheme}, netloc={parsed.netloc}, valid={is_valid}")
+            return is_valid
 
     async def parse_image(self, url: str, buffer_index: int) -> None:
         """Process a single image asynchronously"""
@@ -347,20 +356,30 @@ class XiinoHTMLParser(HTMLParser):
     async def _handle_data_url(self, url: str) -> Union[str, BytesIO]:
         """Handle data URL image content"""
         header, base64_data = url.split(',', 1)
+        html_logger.debug(f"Processing data URL with header: {header}")
         if 'svg+xml' in header.lower():
+            html_logger.debug("Detected SVG data URL")
             return base64.b64decode(base64_data).decode('utf-8')
         else:
+            html_logger.debug("Processing binary data URL")
             buffer = BytesIO(base64.b64decode(base64_data))
-            if buffer.getbuffer().nbytes > MAX_IMAGE_SIZE:
+            size = buffer.getbuffer().nbytes
+            html_logger.debug(f"Decoded data URL size: {size} bytes")
+            if size > MAX_IMAGE_SIZE:
+                html_logger.debug(f"Data URL content exceeds max size: {size} > {MAX_IMAGE_SIZE}")
                 raise ContentTooLargeError()
             return buffer
 
     async def _fetch_image(self, url: str) -> BytesIO:
         """Fetch image from URL"""
         full_url = urljoin(self.base_url, url)
+        html_logger.debug(f"Fetching image from: {full_url}")
         image_data, _ = await fetch_binary(full_url, cookies=self.cookies)
         
-        if len(image_data) > MAX_IMAGE_SIZE:
+        size = len(image_data)
+        html_logger.debug(f"Fetched image size: {size} bytes")
+        if size > MAX_IMAGE_SIZE:
+            html_logger.debug(f"Fetched image exceeds max size: {size} > {MAX_IMAGE_SIZE}")
             raise ContentTooLargeError()
             
         return BytesIO(image_data)
@@ -373,6 +392,7 @@ class XiinoHTMLParser(HTMLParser):
 
     async def _create_converter(self, buffer: Union[str, BytesIO], is_svg: bool) -> EBDConverter:
         """Create appropriate converter for image type"""
+        html_logger.debug(f"Creating converter for {'SVG' if is_svg else 'raster'} image")
         if is_svg:
             if isinstance(buffer, BytesIO):
                 svg_content = buffer.read().decode('utf-8')
@@ -382,6 +402,7 @@ class XiinoHTMLParser(HTMLParser):
             return EBDConverter(svg_content)
         else:
             image = Image.open(buffer)
+            html_logger.debug(f"Opened image: format={image.format}, mode={image.mode}, size={image.width}x{image.height}")
             if not self._validate_image_dimensions(image):
                 raise ValueError("Invalid image dimensions")
             return EBDConverter(image)
@@ -397,7 +418,9 @@ class XiinoHTMLParser(HTMLParser):
 
     async def _convert_image(self, converter: EBDConverter) -> Any:
         """Convert image to EBD format"""
+        html_logger.debug(f"Converting image to {'grayscale' if self.grayscale_depth else 'color'} format")
         if self.grayscale_depth:
+            html_logger.debug(f"Using {self.grayscale_depth}-bit grayscale depth")
             return await converter.convert_gs(depth=self.grayscale_depth, compressed=True)
         else:
             return await converter.convert_colour(compressed=True)
@@ -407,6 +430,7 @@ class XiinoHTMLParser(HTMLParser):
         ebd_ref = self.next_ebd_ref
         self.next_ebd_ref += 1
         
+        html_logger.debug(f"Generating tags for converted image: mode={ebd_data.mode}, size={ebd_data.width}x{ebd_data.height}")
         img_tag = ebd_data.generate_img_tag(name=f"#{ebd_ref}") + "\n"
         ebd_tag = ebd_data.generate_ebdimage_tag(name=ebd_ref) + "\n"
         
