@@ -27,14 +27,13 @@ def apply_floyd_steinberg_dithering(
         Tuple of (processed data, indices)
     """
     height, width = data.shape[:2]
-    image_logger.debug(f"Applying Floyd-Steinberg dithering to {width}x{height} image")
+    image_logger.debug(f"Starting Floyd-Steinberg dithering ({width}x{height})")
     
     error_buffer = np.zeros_like(data, dtype=np.float32)
     processed_data = np.zeros_like(data)
     indices = np.zeros((height, width), dtype=np.uint8)
     
     total_error = 0.0
-    max_error = 0.0
     
     for y in range(height):
         row_data = data[y].copy()
@@ -48,11 +47,10 @@ def apply_floyd_steinberg_dithering(
         # Track error statistics
         row_error = np.abs(quant_errors).mean()
         total_error += row_error
-        max_error = max(max_error, row_error)
         
-        if y % 20 == 0:  # Log progress and error stats periodically
+        if y % 50 == 0 and y > 0:  # Log progress less frequently
             avg_error = total_error / (y + 1)
-            image_logger.debug(f"Row {y}/{height}: avg error={avg_error:.2f}, max error={max_error:.2f}")
+            image_logger.debug(f"Progress: {y}/{height} rows processed (avg error={avg_error:.2f})")
         
         # Get the actual quantized colors for this row
         selected_colors = PALETTE_ARRAY[row_indices]
@@ -74,8 +72,8 @@ def apply_floyd_steinberg_dithering(
             if width > 1:
                 error_buffer[y+1, 1:] += quant_errors[:-1] * 1/16
     
-    avg_error = total_error / height
-    image_logger.debug(f"Floyd-Steinberg dithering complete: avg error={avg_error:.2f}, max error={max_error:.2f}")
+    final_error = total_error / height
+    image_logger.debug(f"Dithering complete (avg error={final_error:.2f})")
     return processed_data, indices
 
 def apply_ordered_dithering(
@@ -93,17 +91,15 @@ def apply_ordered_dithering(
         Tuple of (processed data, indices)
     """
     height, width = data.shape[:2]
-    image_logger.debug(f"Applying ordered dithering to {width}x{height} image")
+    image_logger.debug(f"Starting ordered dithering ({width}x{height}, {'RGB' if len(data.shape) == 3 else 'grayscale'})")
     
     # Tile the Bayer matrix to match image size
     threshold_map = np.tile(BAYER_MATRIX_4x4, ((height + 3) // 4, (width + 3) // 4))[:height, :width]
     
     # Add threshold map to each color channel and scale appropriately
     if len(data.shape) == 3:  # RGB data
-        image_logger.debug("Processing RGB data")
         data_with_threshold = data + threshold_map[:, :, np.newaxis] * 32 - 16
     else:  # Grayscale data
-        image_logger.debug("Processing grayscale data")
         data_with_threshold = data + threshold_map * 32 - 16
     data_with_threshold = np.clip(data_with_threshold, 0, 255)
     
@@ -116,10 +112,9 @@ def apply_ordered_dithering(
     indices, errors = find_closest_color_fn(data_flat)
     indices = indices.reshape(height, width).astype(np.uint8)
     
-    # Calculate error statistics
-    avg_error = np.abs(errors).mean()
-    max_error = np.abs(errors).max()
-    image_logger.debug(f"Color quantization: avg error={avg_error:.2f}, max error={max_error:.2f}")
+    # Calculate and log final error
+    final_error = np.abs(errors).mean()
+    image_logger.debug(f"Dithering complete (avg error={final_error:.2f})")
     
     # Get the actual quantized colors for all pixels
     processed_data = np.zeros_like(data)
@@ -165,9 +160,7 @@ def apply_dithering(
     if priority is None:
         priority = os.environ.get('IMAGE_DITHER_PRIORITY', 'quality')
     
-    image_logger.debug(f"Starting dithering with priority: {priority}")
-    image_logger.debug(f"Input shape: {data.shape}, dtype: {data.dtype}")
-    image_logger.debug(f"Palette size: {len(palette_array)} colors")
+    image_logger.debug(f"Starting dithering (priority={priority}, shape={data.shape}, palette={len(palette_array)} colors)")
     
     if priority == 'performance':
         return apply_ordered_dithering(data, find_closest_color_fn)

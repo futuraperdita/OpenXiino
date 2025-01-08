@@ -120,7 +120,6 @@ def find_closest_color(pixels: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     avg_error = np.abs(errors).mean()
     max_error = np.abs(errors).max()
     unique_colors = len(np.unique(indices))
-    image_logger.debug(f"Color quantization: avg error={avg_error:.2f}, max error={max_error:.2f}, unique colors={unique_colors}")
     
     return indices, errors
 
@@ -135,7 +134,6 @@ def find_closest_gray(pixels: np.ndarray, levels: int) -> Tuple[np.ndarray, np.n
         pixels = pixels.reshape(-1, 1)
     
     num_pixels = len(pixels)
-    image_logger.debug(f"Finding closest {levels}-level grayscale values for {num_pixels} pixels")
     
     # Convert RGB to LAB if needed
     if len(pixels.shape) > 1 and pixels.shape[-1] == 3:
@@ -168,8 +166,7 @@ def find_closest_gray(pixels: np.ndarray, levels: int) -> Tuple[np.ndarray, np.n
     avg_error = np.abs(errors).mean()
     max_error = np.abs(errors).max()
     unique_levels = len(np.unique(indices))
-    image_logger.debug(f"Grayscale quantization: avg error={avg_error:.2f}, max error={max_error:.2f}, unique levels={unique_levels}/{levels}")
-    
+
     # Invert indices for Xiino's format (0 = white, max = black)
     quantized = ((levels - 1) - indices).astype(np.uint8)
     

@@ -43,12 +43,12 @@ class ContentTooLargeError(Exception):
     """Raised when content exceeds maximum size limit"""
     pass
 
-async def try_https_upgrade(url: str, session: aiohttp.ClientSession, **kwargs) -> Tuple[bool, Optional[aiohttp.ClientResponse]]:
+async def try_https_upgrade(url: str, session: aiohttp.ClientSession, **kwargs) -> Tuple[bool, Optional[str]]:
     """
     Attempt to upgrade an HTTP connection to HTTPS.
-    Returns (attempted, response) tuple where:
+    Returns (attempted, https_url) tuple where:
     - attempted: boolean indicating if upgrade was attempted
-    - response: ClientResponse if successful, None if upgrade failed or wasn't attempted
+    - https_url: The HTTPS URL if upgrade successful, None if upgrade failed or wasn't attempted
     """
     if not ATTEMPT_HTTPS_UPGRADE or url.startswith('https://'):
         return False, None
@@ -56,21 +56,11 @@ async def try_https_upgrade(url: str, session: aiohttp.ClientSession, **kwargs) 
     # Try direct HTTPS
     https_url = urlunparse(urlparse(url)._replace(scheme='https'))
     try:
-        # Add Upgrade header for HTTP/1.1 upgrade mechanism
-        headers = kwargs.get('headers', {}).copy()
-        headers.update({
-            'Upgrade': 'TLS/1.0, HTTP/1.1',
-            'Connection': 'Upgrade'
-        })
-        kwargs['headers'] = headers
-        
-        async with session.get(https_url, ssl=ssl_context, **kwargs) as response:
-            if response.status == 101:  # Switching Protocols
-                server_logger.debug("Successfully upgraded to HTTPS via HTTP/1.1 Upgrade")
-                return True, response
-            elif response.status < 400:
+        # Test HTTPS availability with a HEAD request first
+        async with session.head(https_url, ssl=ssl_context, allow_redirects=True, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            if response.status < 400:
                 server_logger.debug("Successfully connected via direct HTTPS")
-                return True, response
+                return True, str(response.url)
             else:
                 return True, None
     except (aiohttp.ClientError, ssl.SSLError) as e:
@@ -82,10 +72,10 @@ async def fetch(
     *,
     cookies: Optional[Dict[str, str]] = None,
     timeout: Optional[float] = None
-) -> Tuple[Union[str, None], str, Dict[str, str]]:
+) -> Tuple[bytes, str, Dict[str, str], Dict[str, str]]:
     """
     Fetch URL content using aiohttp.
-    Returns (content, final_url, cookies)
+    Returns (content, final_url, cookies, headers)
     """
     start_time = time.time()
     timeout_value = aiohttp.ClientTimeout(total=timeout or DEFAULT_TIMEOUT)
@@ -108,16 +98,18 @@ async def fetch(
             'max_redirects': MAX_REDIRECTS
         }
         
-        attempted_upgrade, upgraded_response = await try_https_upgrade(url, session, **kwargs)
-        if attempted_upgrade and upgraded_response:
-            response = upgraded_response
+        attempted_upgrade, https_url = await try_https_upgrade(url, session, **kwargs)
+        if attempted_upgrade and https_url:
+            # Use the HTTPS URL for the actual request
+            response = await session.get(https_url, ssl=ssl_context, **kwargs)
         else:
-            # Either upgrade wasn't attempted or it failed
+            # Either upgrade wasn't attempted or it failed, use original URL
             response = await session.get(url, **kwargs)
             
         async with response:
             if str(response.url).startswith('https://') and url.startswith('http://'):
                 server_logger.debug(f"Connection upgraded to HTTPS: {response.url}")
+            
             # Get response cookies
             response_cookies = {}
             for cookie_name, cookie_morsel in response.cookies.items():
@@ -130,7 +122,7 @@ async def fetch(
                 raise ContentTooLargeError()
 
             # Read content in chunks to check size
-            content = ''
+            chunks = []
             current_size = 0
             async for chunk in response.content.iter_chunks():
                 chunk_data = chunk[0]  # chunk is a tuple (data, end_of_chunk)
@@ -138,8 +130,9 @@ async def fetch(
                 if current_size > MAX_PAGE_SIZE:
                     server_logger.warning(f"Content size {current_size} bytes exceeds limit of {MAX_PAGE_SIZE} bytes")
                     raise ContentTooLargeError()
-                content += chunk_data.decode('utf-8', errors='replace')
+                chunks.append(chunk_data)
 
+            content = b''.join(chunks)
             end_time = time.time()
             duration = end_time - start_time
             
@@ -152,7 +145,8 @@ async def fetch(
             return (
                 content,
                 str(response.url),
-                response_cookies
+                response_cookies,
+                dict(response.headers)
             )
 
 async def post(
@@ -161,7 +155,7 @@ async def post(
     *,
     cookies: Optional[Dict[str, str]] = None,
     timeout: Optional[float] = None
-) -> Tuple[Union[str, None], str, Dict[str, str]]:
+) -> Tuple[str, str, Dict[str, str]]:
     """
     Submit form data via POST using aiohttp.
     Returns (content, final_url, cookies)
@@ -182,7 +176,6 @@ async def post(
     # Create connector with SOCKS5 proxy if configured
     connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
     async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
-        # Try HTTPS upgrade first
         kwargs = {
             'headers': headers,
             'cookies': cookies,
@@ -192,11 +185,12 @@ async def post(
             'max_redirects': MAX_REDIRECTS
         }
         
-        attempted_upgrade, upgraded_response = await try_https_upgrade(url, session, **kwargs)
-        if attempted_upgrade and upgraded_response:
-            response = upgraded_response
+        attempted_upgrade, https_url = await try_https_upgrade(url, session, **kwargs)
+        if attempted_upgrade and https_url:
+            # Use the HTTPS URL for the actual request
+            response = await session.post(https_url, ssl=ssl_context, **kwargs)
         else:
-            # Either upgrade wasn't attempted or it failed
+            # Either upgrade wasn't attempted or it failed, use original URL
             response = await session.post(url, **kwargs)
             
         async with response:
@@ -215,7 +209,7 @@ async def post(
                 raise ContentTooLargeError()
 
             # Read content in chunks to check size
-            content = ''
+            chunks = []
             current_size = 0
             async for chunk in response.content.iter_chunks():
                 chunk_data = chunk[0]  # chunk is a tuple (data, end_of_chunk)
@@ -223,8 +217,9 @@ async def post(
                 if current_size > MAX_PAGE_SIZE:
                     server_logger.warning(f"Content size {current_size} bytes exceeds limit of {MAX_PAGE_SIZE} bytes")
                     raise ContentTooLargeError()
-                content += chunk_data.decode('utf-8', errors='replace')
+                chunks.append(chunk_data)
 
+            content = b''.join(chunks)
             end_time = time.time()
             duration = end_time - start_time
             
@@ -235,57 +230,7 @@ async def post(
             server_logger.debug(f"Content size: {current_size} bytes")
             
             return (
-                content,
+                content.decode('utf-8', errors='replace'),
                 str(response.url),
                 response_cookies
             )
-
-async def fetch_binary(
-    url: str,
-    *,
-    cookies: Optional[Dict[str, str]] = None,
-    timeout: Optional[float] = None
-) -> Tuple[bytes, Dict[str, str]]:
-    """
-    Fetch binary content (like images) using aiohttp.
-    Returns (content, cookies)
-    """
-    timeout_value = aiohttp.ClientTimeout(total=timeout or DEFAULT_TIMEOUT)
-    headers = {"User-Agent": DEFAULT_USER_AGENT}
-    
-    server_logger.debug(f"Starting binary fetch for URL: {url}")
-    if cookies:
-        server_logger.debug(f"Using cookies: {cookies}")
-    
-    # Create connector with SOCKS5 proxy if configured
-    connector = ProxyConnector.from_url(PROXY_URL) if PROXY_URL else None
-    async with aiohttp.ClientSession(cookie_jar=None, connector=connector) as session:
-        # Try HTTPS upgrade first
-        kwargs = {
-            'headers': headers,
-            'cookies': cookies,
-            'timeout': timeout_value,
-            'allow_redirects': ALLOW_REDIRECTS,
-            'max_redirects': MAX_REDIRECTS
-        }
-        
-        attempted_upgrade, upgraded_response = await try_https_upgrade(url, session, **kwargs)
-        if attempted_upgrade and upgraded_response:
-            response = upgraded_response
-        else:
-            # Either upgrade wasn't attempted or it failed
-            response = await session.get(url, **kwargs)
-            
-        async with response:
-            if str(response.url).startswith('https://') and url.startswith('http://'):
-                server_logger.debug(f"Binary fetch connection upgraded to HTTPS: {response.url}")
-            # Get response cookies
-            response_cookies = {}
-            for cookie_name, cookie_morsel in response.cookies.items():
-                response_cookies[cookie_name] = cookie_morsel.value
-                
-            content = await response.read()
-            server_logger.debug(f"Binary fetch completed, content size: {len(content)} bytes")
-            server_logger.debug(f"Response cookies: {response_cookies}")
-            
-            return content, response_cookies

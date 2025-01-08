@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import mimetypes
+import aiohttp
 from aiohttp import web
 from dotenv import load_dotenv
 from urllib.parse import urlparse
@@ -10,7 +11,7 @@ from lib.xiino_html_converter import XiinoHTMLParser
 from lib.controllers.page_controller import PageController
 from lib.logger import setup_logging, server_logger
 from lib.cookie_manager import CookieManager
-from lib.httpclient import fetch, fetch_binary, post, ContentTooLargeError
+from lib.httpclient import fetch, post, ContentTooLargeError
 from lib.xiino_image_converter import EBDConverter
 
 # Load environment variables and setup logging
@@ -210,22 +211,55 @@ class XiinoServer:
     async def handle_external_url(self, url: str, request: web.Request) -> web.Response:
         """Handle external URL requests"""
         try:
-            # Check if this is a direct image request
-            parsed_url = urlparse(url)
-            mime_type, _ = mimetypes.guess_type(parsed_url.path)
-            is_image = mime_type and mime_type.startswith('image/')
-            is_svg = (mime_type == 'image/svg+xml' or parsed_url.path.lower().endswith('.svg'))
-
             # Get cookies for request
             request_cookies = CookieManager.prepare_request_cookies(
                 request.headers.get('Cookie'),
                 url
             )
 
-            if is_image:
-                return await self.handle_image_request(url, request_cookies, is_svg, request)
+            # Get the content and check its type
+            content, response_url, response_cookies, response_headers = await fetch(url, cookies=request_cookies)
+            content_type = response_headers.get('content-type', '').lower()
+            server_logger.debug(f"Got content type: {content_type}")
+            
+            # Check file extension for image types
+            parsed_url = urlparse(url)
+            _, ext = os.path.splitext(parsed_url.path)
+            is_image_ext = ext.lower() in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp')
+            
+            # Handle as image if:
+            # 1. Content-type is image/*, or
+            # 2. Content-type is application/octet-stream and extension is image-like, or
+            # 3. No content-type but extension is image-like
+            if (content_type.startswith('image/') or
+                (content_type == 'application/octet-stream' and is_image_ext) or
+                (not content_type and is_image_ext)):
+                return await self.handle_image_request(url, request_cookies, 'svg' in content_type, request, 
+                                                     content=content, response_cookies=response_cookies)
+            elif content_type.startswith('text/html'):
+                # Only handle explicit text/html as HTML
+                text_content = content.decode('utf-8', errors='replace')
+                return await self.handle_html_request(url, request_cookies, request, 
+                                                    content=text_content, response_url=response_url, 
+                                                    response_cookies=response_cookies)
             else:
-                return await self.handle_html_request(url, request_cookies, request)
+                # Try to handle as image if extension suggests it
+                if is_image_ext:
+                    try:
+                        return await self.handle_image_request(url, request_cookies, ext.lower() == '.svg', request,
+                                                            content=content, response_cookies=response_cookies)
+                    except Exception as e:
+                        server_logger.error(f"Failed to handle as image: {str(e)}")
+                
+                # Fall back to HTML for unknown/unsupported types
+                try:
+                    text_content = content.decode('utf-8', errors='replace')
+                    return await self.handle_html_request(url, request_cookies, request,
+                                                        content=text_content, response_url=response_url,
+                                                        response_cookies=response_cookies)
+                except Exception as e:
+                    server_logger.error(f"Failed to handle as HTML: {str(e)}")
+                    return await self.render_page("error_404")
 
         except ContentTooLargeError:
             return await self.render_page("page_too_large")
@@ -233,31 +267,30 @@ class XiinoServer:
             server_logger.error(f"Error processing URL {url}: {str(e)}")
             return await self.render_page("error_404")
 
-    async def handle_image_request(self, url: str, request_cookies: dict, is_svg: bool, request: web.Request) -> web.Response:
+    async def handle_image_request(self, url: str, request_cookies: dict, is_svg: bool, request: web.Request,
+                                 content: bytes, response_cookies: dict) -> web.Response:
         """Handle image URL requests"""
-        fetch_start = time.time()
-        server_logger.info(f"Fetching image URL: {url}")
-        
-        # Fetch and convert image
-        image_data, response_cookies = await fetch_binary(url, cookies=request_cookies)
-        
-        if is_svg:
-            svg_content = image_data.decode('utf-8')
-            converter = EBDConverter(svg_content)
-        else:
-            from PIL import Image
-            from io import BytesIO
-            image = Image.open(BytesIO(image_data))
-            converter = EBDConverter(image)
+        try:
+            # Create appropriate converter based on content type
+            if is_svg:
+                svg_content = content.decode('utf-8')
+                converter = EBDConverter(svg_content)
+            else:
+                from PIL import Image
+                from io import BytesIO
+                image = Image.open(BytesIO(content))
+                converter = EBDConverter(image)
             
-        await converter._ensure_initialized()
-        
-        # Convert to EBD format
-        gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.raw_path)
-        if gscale_depth:
-            ebd_data = await converter.convert_gs(depth=int(gscale_depth), compressed=True)
-        else:
-            ebd_data = await converter.convert_colour(compressed=True)
+            # Initialize and convert to EBD format
+            await converter._initialize()
+            gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.raw_path)
+            if gscale_depth:
+                ebd_data = await converter.convert_gs(depth=int(gscale_depth), compressed=True)
+            else:
+                ebd_data = await converter.convert_colour(compressed=True)
+        finally:
+            # Ensure resources are cleaned up
+            await converter.cleanup()
         
         # Generate HTML
         img_tag = ebd_data.generate_img_tag(name=f"#{self.next_ebd_ref}")
@@ -276,15 +309,10 @@ class XiinoServer:
             
         return response
 
-    async def handle_html_request(self, url: str, request_cookies: dict, request: web.Request) -> web.Response:
+    async def handle_html_request(self, url: str, request_cookies: dict, request: web.Request,
+                                content: str, response_url: str, response_cookies: dict) -> web.Response:
         """Handle HTML URL requests"""
-        fetch_start = time.time()
-        server_logger.info(f"Fetching HTML URL: {url}")
-        
-        # Fetch and parse HTML
-        content, response_url, response_cookies = await fetch(url, cookies=request_cookies)
-        fetch_duration = time.time() - fetch_start
-        server_logger.debug(f"URL fetch completed in {fetch_duration:.2f}s")
+        server_logger.info(f"Processing HTML URL: {url}")
         
         # Parse HTML
         gscale_depth = self._get_regex_group(self.GSCALE_DEPTH_REGEX, request.raw_path)

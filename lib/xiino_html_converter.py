@@ -11,7 +11,7 @@ import os
 from typing import Union, List, Optional, Dict, Any
 from dataclasses import dataclass
 from dotenv import load_dotenv
-from lib.httpclient import fetch_binary, ContentTooLargeError
+from lib.httpclient import fetch, ContentTooLargeError
 from lib.logger import html_logger
 from lib.xiino_image_converter import EBDConverter
 
@@ -229,6 +229,9 @@ class XiinoHTMLParser(HTMLParser):
         new_attrs = []
         for attr_name, attr_value in attrs:
             if attr_name == "href":
+                # Handle protocol-relative URLs
+                if attr_value.startswith('//'):
+                    attr_value = 'http:' + attr_value
                 new_url = urljoin(self.base_url, attr_value)
                 if new_url.startswith("https:"):
                     new_url = new_url.replace("https:", "http:", 1)
@@ -309,6 +312,10 @@ class XiinoHTMLParser(HTMLParser):
         start_time = time.time()
         html_logger.debug(f"Starting image processing for: {url}")
         
+        # Handle protocol-relative URLs first
+        if url.startswith('//'):
+            url = 'http:' + url
+
         if not self.validate_image_url(url):
             html_logger.warning(f"Invalid image URL: {url}")
             self.__parsed_data_buffer[buffer_index] = "<p>[Invalid image URL]</p>\n"
@@ -372,17 +379,32 @@ class XiinoHTMLParser(HTMLParser):
 
     async def _fetch_image(self, url: str) -> BytesIO:
         """Fetch image from URL"""
+        # Handle protocol-relative URLs (//example.com/image.png)
+        if url.startswith('//'):
+            url = 'http:' + url
+            
         full_url = urljoin(self.base_url, url)
         html_logger.debug(f"Fetching image from: {full_url}")
-        image_data, _ = await fetch_binary(full_url, cookies=self.cookies)
+        content, _, _, headers = await fetch(full_url, cookies=self.cookies)
         
-        size = len(image_data)
+        # Verify content type is an image (try both cases since headers can be case-sensitive)
+        content_type = headers.get('content-type', headers.get('Content-Type', '')).lower()
+        if not content_type:
+            html_logger.error(f"URL {full_url} returned no content type header. Headers: {headers}")
+            raise ValueError("No content type header in response")
+        if not content_type.startswith('image/'):
+            html_logger.error(f"URL {full_url} returned non-image content type: {content_type}")
+            raise ValueError(f"Non-image content type: {content_type}")
+            
+        html_logger.debug(f"Image content type: {content_type}")
+        
+        size = len(content)
         html_logger.debug(f"Fetched image size: {size} bytes")
         if size > MAX_IMAGE_SIZE:
             html_logger.debug(f"Fetched image exceeds max size: {size} > {MAX_IMAGE_SIZE}")
             raise ContentTooLargeError()
             
-        return BytesIO(image_data)
+        return BytesIO(content)
 
     async def _check_svg_content(self, buffer: BytesIO) -> bool:
         """Check if content is SVG"""
